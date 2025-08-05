@@ -14,6 +14,7 @@ import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator
 from database import db
+from robust_predictor import RobustICUPredictor  # <-- ADD THIS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -175,11 +176,12 @@ try:
     loaded_model = joblib.load(model_path)
     
     # Check if the loaded model has the required methods
-    if hasattr(loaded_model, 'predict') and hasattr(loaded_model, 'predict_proba'):
+    if hasattr(loaded_model, 'predict_dict') and hasattr(loaded_model, 'get_top_features'):
         model = loaded_model
-        logger.info(f"Original model loaded successfully from {model_path}")
+        logger.info(f"RobustICUPredictor model loaded successfully from {model_path}")
     else:
-        raise Exception("Loaded model doesn't have required methods")
+        raise Exception("Loaded model doesn't have required methods (predict_dict/get_top_features)")
+
         
 except Exception as e:
     logger.error(f"Failed to load original model: {e}")
@@ -243,25 +245,24 @@ async def predict_transfer_readiness(patient: PatientData):
     
     try:
         # Convert input to the format your model expects
-        features = np.array([[
-            patient.HR,
-            patient.SpO2,
-            patient.RESP,
-            patient.ABPsys,
-            patient.lactate,
-            patient.gcs,
-            patient.age,
-            patient.comorbidity_score,
-            1 if patient.on_vent else 0,
-            1 if patient.on_pressors else 0
-        ]])
-        
-        # Make prediction
-        prediction = model.predict(features)[0]
-        probability = model.predict_proba(features)[0]
-        
-        # Get the probability for the positive class (transfer ready)
-        transfer_ready_prob = probability[1] if len(probability) > 1 else probability[0]
+        data_dict = {
+            "HR": patient.HR,
+            "SpO2": patient.SpO2,
+            "RESP": patient.RESP,
+            "ABPsys": patient.ABPsys,
+            "lactate": patient.lactate,
+            "gcs": patient.gcs,
+            "age": patient.age,
+            "comorbidity_score": patient.comorbidity_score,
+            "on_vent": int(patient.on_vent),
+            "on_pressors": int(patient.on_pressors)
+        }
+
+        result = model.predict_dict(data_dict, ensemble_type='best')  # or "log_xgb" if you want
+        transfer_ready_prob = result["probability"]
+        prediction = 1 if result["prediction_label"] == "Ready" else 0
+        confidence = result["confidence"]
+
         
         # Generate explanation based on feature importance
         feature_names = [
@@ -273,14 +274,9 @@ async def predict_transfer_readiness(patient: PatientData):
         # Get feature importance if your model supports it
         risk_factors = []
         try:
-            if hasattr(model, 'feature_importances_') and model.feature_importances_ is not None:
-                importances = model.feature_importances_
-                # Get top 3 most important features
-                top_indices = np.argsort(importances)[-3:][::-1]
-                risk_factors = [feature_names[i] for i in top_indices]
-        except:
+            risk_factors = model.get_top_features(data_dict, top_k=3)
+        except Exception:
             risk_factors = ["Clinical assessment required"]
-        
         # Generate clinical explanation
         if prediction == 1:  # Transfer ready
             explanation = f"Patient shows stable clinical parameters with {transfer_ready_prob:.1%} confidence for safe transfer"
