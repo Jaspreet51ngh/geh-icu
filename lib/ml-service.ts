@@ -58,11 +58,11 @@ export interface TransferRequest {
   id?: string
   patient_id: string
   nurse_id: string
-  doctor_id?: string
-  department_admin_id?: string
+  doctor_id?: string | undefined
+  department_admin_id?: string | undefined
   status: "pending" | "doctor_approved" | "admin_approved" | "rejected"
-  target_department?: string
-  notes?: string
+  target_department?: string | undefined
+  notes?: string | undefined
   created_at: string
   updated_at: string
 }

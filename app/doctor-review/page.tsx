@@ -15,8 +15,18 @@ import {
   RefreshCw,
   LogOut,
   Activity,
+  TrendingUp,
+  Brain,
+  Bed,
+  Send,
+  Hourglass,
+  CheckCircle,
+  Monitor,
 } from "lucide-react"
 import { MLPredictionService, type TransferRequest, type Patient } from "@/lib/ml-service"
+import { PatientCard } from "@/components/patient-card"
+import { TransferRequestModal } from "@/components/transfer-request-modal"
+import { NotificationPanel } from "@/components/notification-panel"
 import { useRouter } from "next/navigation"
 
 export default function DoctorReview() {
@@ -25,6 +35,11 @@ export default function DoctorReview() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [username, setUsername] = useState("")
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null)
+  const [showTransferModal, setShowTransferModal] = useState(false)
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+  const [activeTab, setActiveTab] = useState<"patients" | "requests">("patients")
   const router = useRouter()
 
   useEffect(() => {
@@ -46,6 +61,7 @@ export default function DoctorReview() {
         MLPredictionService.connectWebSocket()
         
         // Add listeners for real-time updates
+        MLPredictionService.addListener('vitals_update', handleVitalsUpdate)
         MLPredictionService.addListener('transfer_request_created', handleTransferRequestCreated)
         MLPredictionService.addListener('transfer_request_updated', handleTransferRequestUpdated)
         
@@ -64,10 +80,17 @@ export default function DoctorReview() {
 
     fetchData()
 
-    // Cleanup listeners on unmount
+    // Auto-refresh patients every 2.5 seconds
+    const interval = setInterval(() => {
+      fetchPatients()
+    }, 2500)
+
+    // Cleanup listeners and interval on unmount
     return () => {
+      MLPredictionService.removeListener('vitals_update', handleVitalsUpdate)
       MLPredictionService.removeListener('transfer_request_created', handleTransferRequestCreated)
       MLPredictionService.removeListener('transfer_request_updated', handleTransferRequestUpdated)
+      clearInterval(interval)
     }
   }, [router])
 
@@ -84,19 +107,62 @@ export default function DoctorReview() {
     try {
       const patientData = await MLPredictionService.getAllPatients()
       setPatients(patientData)
+      setLastUpdate(new Date())
     } catch (err) {
       console.error("Failed to fetch patients:", err)
     }
   }
 
+  const handleVitalsUpdate = (data: any) => {
+    setPatients(prevPatients => 
+      prevPatients.map(patient => 
+        patient.id === data.patient_id 
+          ? { 
+              ...patient, 
+              vitals: { 
+                ...patient.vitals,
+                heartRate: data.heartRate,
+                spO2: data.spO2,
+                respiratoryRate: data.respiratoryRate,
+                systolicBP: data.systolicBP,
+                lactate: data.lactate,
+                gcs: data.gcs
+              },
+              lastUpdated: new Date()
+            }
+          : patient
+      )
+    )
+    setLastUpdate(new Date())
+  }
+
   const handleTransferRequestCreated = (data: TransferRequest) => {
     setTransferRequests(prev => [...prev, data])
+    setNotifications(prev => [{
+      id: Date.now(),
+      type: 'transfer_request',
+      title: 'New Transfer Request',
+      message: `New transfer request for patient ${data.patient_id}`,
+      timestamp: new Date()
+    }, ...prev])
   }
 
   const handleTransferRequestUpdated = (data: TransferRequest) => {
     setTransferRequests(prev => 
       prev.map(req => req.id === data.id ? data : req)
     )
+    setNotifications(prev => [{
+      id: Date.now(),
+      type: 'transfer_update',
+      title: 'Transfer Request Updated',
+      message: `Transfer request ${data.id} status: ${data.status}`,
+      timestamp: new Date()
+    }, ...prev])
+  }
+
+  const handleTransferRequest = (patient: Patient) => {
+    setSelectedPatient(patient)
+    setShowTransferModal(true)
   }
 
   const handleApprove = async (requestId: string) => {
@@ -151,6 +217,11 @@ export default function DoctorReview() {
     return patients.find(p => p.id === patientId)
   }
 
+  // Calculate dashboard statistics
+  const totalPatients = patients.length
+  const transferReadyPatients = patients.filter(p => p.prediction?.transferReady).length
+  const criticalPatients = patients.filter(p => p.prediction?.confidence < 0.3).length
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -171,10 +242,10 @@ export default function DoctorReview() {
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">
                 <Stethoscope className="h-8 w-8 text-blue-600" />
-                <h1 className="text-2xl font-bold text-gray-900">Doctor Review</h1>
+                <h1 className="text-2xl font-bold text-gray-900">Doctor Dashboard</h1>
               </div>
               <div className="text-sm text-gray-500">
-                Welcome, Dr. {username}
+                Welcome, Dr. {username} • Last updated: {lastUpdate.toLocaleTimeString()}
               </div>
             </div>
             <div className="flex items-center space-x-4">
@@ -209,223 +280,345 @@ export default function DoctorReview() {
           </Alert>
         )}
 
-        {/* Statistics */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Pending Review</CardTitle>
-              <Clock className="h-4 w-4 text-orange-600" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-orange-600">{pendingRequests.length}</div>
-              <p className="text-xs text-muted-foreground">
-                Awaiting your review
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Approved</CardTitle>
-              <CheckCircle2 className="h-4 w-4 text-green-600" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-green-600">{approvedRequests.length}</div>
-              <p className="text-xs text-muted-foreground">
-                Transfer approved
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Rejected</CardTitle>
-              <XCircle className="h-4 w-4 text-red-600" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-600">{rejectedRequests.length}</div>
-              <p className="text-xs text-muted-foreground">
-                Transfer rejected
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Requests</CardTitle>
-              <Activity className="h-4 w-4 text-blue-600" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{transferRequests.length}</div>
-              <p className="text-xs text-muted-foreground">
-                All time
-              </p>
-            </CardContent>
-          </Card>
+        {/* Tab Navigation */}
+        <div className="flex space-x-1 mb-6 bg-white p-1 rounded-lg shadow-sm">
+          <Button
+            variant={activeTab === "patients" ? "default" : "ghost"}
+            onClick={() => setActiveTab("patients")}
+            className="flex-1"
+          >
+            <User className="h-4 w-4 mr-2" />
+            Patient Monitoring
+          </Button>
+          <Button
+            variant={activeTab === "requests" ? "default" : "ghost"}
+            onClick={() => setActiveTab("requests")}
+            className="flex-1"
+          >
+            <Clock className="h-4 w-4 mr-2" />
+            Transfer Requests ({pendingRequests.length})
+          </Button>
         </div>
 
-        {/* Pending Requests */}
-        <div className="space-y-6">
-          <h2 className="text-xl font-semibold text-gray-900">Pending Transfer Requests</h2>
-          
-          {pendingRequests.length === 0 ? (
-            <Card>
-              <CardContent className="text-center py-8">
-                <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">No pending requests</h3>
-                <p className="text-gray-500">All transfer requests have been reviewed.</p>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {pendingRequests.map((request) => {
-                const patient = getPatientById(request.patient_id)
-                
-                return (
-                  <Card key={request.id} className="border-orange-200">
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-lg">
-                          Transfer Request {request.id}
-                        </CardTitle>
-                        <Badge className="bg-orange-100 text-orange-800">
-                          Pending Review
-                        </Badge>
-                      </div>
-                      <div className="text-sm text-gray-600">
-                        Requested by: {request.nurse_id} • {new Date(request.created_at).toLocaleString()}
-                      </div>
-                    </CardHeader>
-                    
-                    <CardContent className="space-y-4">
-                      {patient ? (
-                        <>
-                          <div className="bg-blue-50 p-4 rounded-lg">
-                            <h4 className="font-semibold text-blue-900 mb-2">Patient Information</h4>
-                            <div className="grid grid-cols-2 gap-4 text-sm">
-                              <div>
-                                <span className="font-medium">Name:</span> {patient.name}
-                              </div>
-                              <div>
-                                <span className="font-medium">Age:</span> {patient.age} years
-                              </div>
-                              <div>
-                                <span className="font-medium">Heart Rate:</span> {patient.vitals.heartRate} bpm
-                              </div>
-                              <div>
-                                <span className="font-medium">SpO2:</span> {patient.vitals.spO2}%
-                              </div>
-                              <div>
-                                <span className="font-medium">GCS:</span> {patient.vitals.gcs}/15
-                              </div>
-                              <div>
-                                <span className="font-medium">Lactate:</span> {patient.vitals.lactate} mmol/L
-                              </div>
-                            </div>
-                          </div>
+        {activeTab === "patients" ? (
+          <>
+            {/* Statistics Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Total Patients</CardTitle>
+                  <User className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{totalPatients}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Currently in ICU
+                  </p>
+                </CardContent>
+              </Card>
 
-                          {patient.prediction && (
-                            <div className="bg-green-50 p-4 rounded-lg">
-                              <h4 className="font-semibold text-green-900 mb-2">ML Prediction</h4>
-                              <div className="space-y-2 text-sm">
-                                <div className="flex justify-between">
-                                  <span>Transfer Ready:</span>
-                                  <Badge variant={patient.prediction.transferReady ? "default" : "secondary"}>
-                                    {patient.prediction.transferReady ? "Yes" : "No"}
-                                  </Badge>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Confidence:</span>
-                                  <span className="font-medium">{(patient.prediction.confidence * 100).toFixed(1)}%</span>
-                                </div>
-                                <div>
-                                  <span className="font-medium">Reasoning:</span>
-                                  <p className="text-gray-700 mt-1">{patient.prediction.reasoning}</p>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Transfer Ready</CardTitle>
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-green-600">{transferReadyPatients}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Ready for transfer
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Critical Patients</CardTitle>
+                  <AlertTriangle className="h-4 w-4 text-red-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-red-600">{criticalPatients}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Require attention
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Pending Reviews</CardTitle>
+                  <Clock className="h-4 w-4 text-orange-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-orange-600">{pendingRequests.length}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Awaiting your review
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Patient Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {patients.map((patient) => (
+                <PatientCard
+                  key={patient.id}
+                  patient={patient}
+                  onTransferRequest={() => handleTransferRequest(patient)}
+                  transferRequests={transferRequests}
+                />
+              ))}
+            </div>
+
+            {patients.length === 0 && !loading && (
+              <div className="text-center py-12">
+                <Monitor className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No patients found</h3>
+                <p className="text-gray-500">Check your connection to the backend server.</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Transfer Request Statistics */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Pending Review</CardTitle>
+                  <Clock className="h-4 w-4 text-orange-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-orange-600">{pendingRequests.length}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Awaiting your review
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Approved</CardTitle>
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-green-600">{approvedRequests.length}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Transfer approved
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Rejected</CardTitle>
+                  <XCircle className="h-4 w-4 text-red-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-red-600">{rejectedRequests.length}</div>
+                  <p className="text-xs text-muted-foreground">
+                    Transfer rejected
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Total Requests</CardTitle>
+                  <Activity className="h-4 w-4 text-blue-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-blue-600">{transferRequests.length}</div>
+                  <p className="text-xs text-muted-foreground">
+                    All time
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Pending Requests */}
+            <div className="space-y-6">
+              <h2 className="text-xl font-semibold text-gray-900">Pending Transfer Requests</h2>
+              
+              {pendingRequests.length === 0 ? (
+                <Card>
+                  <CardContent className="text-center py-8">
+                    <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">No pending requests</h3>
+                    <p className="text-gray-500">All transfer requests have been reviewed.</p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {pendingRequests.map((request) => {
+                    const patient = getPatientById(request.patient_id)
+                    
+                    return (
+                      <Card key={request.id} className="border-orange-200">
+                        <CardHeader>
+                          <div className="flex items-center justify-between">
+                            <CardTitle className="text-lg">
+                              Transfer Request {request.id}
+                            </CardTitle>
+                            <Badge className="bg-orange-100 text-orange-800">
+                              Pending Review
+                            </Badge>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Requested by: {request.nurse_id} • {new Date(request.created_at).toLocaleString()}
+                          </div>
+                        </CardHeader>
+                        
+                        <CardContent className="space-y-4">
+                          {patient ? (
+                            <>
+                              <div className="bg-blue-50 p-4 rounded-lg">
+                                <h4 className="font-semibold text-blue-900 mb-2">Patient Information</h4>
+                                <div className="grid grid-cols-2 gap-4 text-sm">
+                                  <div>
+                                    <span className="font-medium">Name:</span> {patient.name}
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Age:</span> {patient.age} years
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Heart Rate:</span> {patient.vitals.heartRate} bpm
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">SpO2:</span> {patient.vitals.spO2}%
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">GCS:</span> {patient.vitals.gcs}/15
+                                  </div>
+                                  <div>
+                                    <span className="font-medium">Lactate:</span> {patient.vitals.lactate} mmol/L
+                                  </div>
                                 </div>
                               </div>
+
+                              {patient.prediction && (
+                                <div className="bg-green-50 p-4 rounded-lg">
+                                  <h4 className="font-semibold text-green-900 mb-2">ML Prediction</h4>
+                                  <div className="space-y-2 text-sm">
+                                    <div className="flex justify-between">
+                                      <span>Transfer Ready:</span>
+                                      <Badge variant={patient.prediction.transferReady ? "default" : "secondary"}>
+                                        {patient.prediction.transferReady ? "Yes" : "No"}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span>Confidence:</span>
+                                      <span className="font-medium">{(patient.prediction.confidence * 100).toFixed(1)}%</span>
+                                    </div>
+                                    <div>
+                                      <span className="font-medium">Reasoning:</span>
+                                      <p className="text-gray-700 mt-1">{patient.prediction.reasoning}</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="text-center py-4 text-gray-500">
+                              Patient data not available
                             </div>
                           )}
-                        </>
-                      ) : (
-                        <div className="text-center py-4 text-gray-500">
-                          Patient data not available
-                        </div>
-                      )}
 
-                      <div className="flex space-x-2">
-                        <Button
-                          onClick={() => handleApprove(request.id!)}
-                          className="flex-1 bg-green-600 hover:bg-green-700 text-white"
-                        >
-                          <CheckCircle2 className="h-4 w-4 mr-2" />
-                          Approve Transfer
-                        </Button>
-                        <Button
-                          onClick={() => handleReject(request.id!)}
-                          variant="outline"
-                          className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
-                        >
-                          <XCircle className="h-4 w-4 mr-2" />
-                          Reject
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Recent Activity */}
-        {(approvedRequests.length > 0 || rejectedRequests.length > 0) && (
-          <div className="mt-12 space-y-6">
-            <h2 className="text-xl font-semibold text-gray-900">Recent Activity</h2>
-            
-            <div className="space-y-4">
-              {[...approvedRequests, ...rejectedRequests]
-                .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-                .slice(0, 5)
-                .map((request) => {
-                  const patient = getPatientById(request.patient_id)
-                  
-                  return (
-                    <Card key={request.id} className="border-gray-200">
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                            {request.status === "doctor_approved" ? (
-                              <CheckCircle2 className="h-5 w-5 text-green-600" />
-                            ) : (
-                              <XCircle className="h-5 w-5 text-red-600" />
-                            )}
-                            <div>
-                              <div className="font-medium">
-                                {request.status === "doctor_approved" ? "Approved" : "Rejected"}: {patient?.name || request.patient_id}
-                              </div>
-                              <div className="text-sm text-gray-500">
-                                {new Date(request.updated_at).toLocaleString()}
-                              </div>
-                            </div>
+                          <div className="flex space-x-2">
+                            <Button
+                              onClick={() => handleApprove(request.id!)}
+                              className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                            >
+                              <CheckCircle2 className="h-4 w-4 mr-2" />
+                              Approve Transfer
+                            </Button>
+                            <Button
+                              onClick={() => handleReject(request.id!)}
+                              variant="outline"
+                              className="flex-1 border-red-300 text-red-700 hover:bg-red-50"
+                            >
+                              <XCircle className="h-4 w-4 mr-2" />
+                              Reject
+                            </Button>
                           </div>
-                          <Badge 
-                            className={
-                              request.status === "doctor_approved" 
-                                ? "bg-green-100 text-green-800" 
-                                : "bg-red-100 text-red-800"
-                            }
-                          >
-                            {request.status === "doctor_approved" ? "Approved" : "Rejected"}
-                          </Badge>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )
-                })}
+                        </CardContent>
+                      </Card>
+                    )
+                  })}
+                </div>
+              )}
             </div>
-          </div>
+
+            {/* Recent Activity */}
+            {(approvedRequests.length > 0 || rejectedRequests.length > 0) && (
+              <div className="mt-12 space-y-6">
+                <h2 className="text-xl font-semibold text-gray-900">Recent Activity</h2>
+                
+                <div className="space-y-4">
+                  {[...approvedRequests, ...rejectedRequests]
+                    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+                    .slice(0, 5)
+                    .map((request) => {
+                      const patient = getPatientById(request.patient_id)
+                      
+                      return (
+                        <Card key={request.id} className="border-gray-200">
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-3">
+                                {request.status === "doctor_approved" ? (
+                                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                                ) : (
+                                  <XCircle className="h-5 w-5 text-red-600" />
+                                )}
+                                <div>
+                                  <div className="font-medium">
+                                    {request.status === "doctor_approved" ? "Approved" : "Rejected"}: {patient?.name || request.patient_id}
+                                  </div>
+                                  <div className="text-sm text-gray-500">
+                                    {new Date(request.updated_at).toLocaleString()}
+                                  </div>
+                                </div>
+                              </div>
+                              <Badge 
+                                className={
+                                  request.status === "doctor_approved" 
+                                    ? "bg-green-100 text-green-800" 
+                                    : "bg-red-100 text-red-800"
+                                }
+                              >
+                                {request.status === "doctor_approved" ? "Approved" : "Rejected"}
+                              </Badge>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )
+                    })}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
+
+      {/* Transfer Request Modal */}
+      {selectedPatient && (
+        <TransferRequestModal
+          patient={selectedPatient}
+          isOpen={showTransferModal}
+          onClose={() => {
+            setShowTransferModal(false)
+            setSelectedPatient(null)
+          }}
+          userRole="Doctor"
+        />
+      )}
+
+      {/* Notification Panel */}
+      <NotificationPanel 
+        notifications={notifications}
+        onClearNotification={(id) => 
+          setNotifications(prev => prev.filter(n => n.id !== id))
+        }
+      />
     </div>
   )
 }

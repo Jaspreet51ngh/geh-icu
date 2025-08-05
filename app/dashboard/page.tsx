@@ -283,6 +283,7 @@ export default function Dashboard() {
               key={patient.id}
               patient={patient}
               onTransferRequest={() => handleTransferRequest(patient)}
+              transferRequests={transferRequests}
             />
           ))}
         </div>

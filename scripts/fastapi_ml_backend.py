@@ -110,12 +110,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables for real-time data
+# WebSocket connection management
 active_connections: List[WebSocket] = []
-patient_data = {}
-current_patient_index = 0
 
-# Initialize database with sample patients
+async def send_notification_to_all_connections(notification: dict):
+    """Safely send notification to all active WebSocket connections"""
+    disconnected_connections = []
+    
+    for connection in active_connections:
+        try:
+            await connection.send_text(json.dumps(notification))
+        except Exception as e:
+            logger.warning(f"Failed to send notification to WebSocket: {e}")
+            disconnected_connections.append(connection)
+    
+    # Remove disconnected connections
+    for connection in disconnected_connections:
+        if connection in active_connections:
+            active_connections.remove(connection)
+            logger.info(f"Removed disconnected WebSocket connection. Active connections: {len(active_connections)}")
+
+# Initialize database with patients
 def initialize_database_with_patients():
     """Initialize database with patients from CSV data"""
     if df is None:
@@ -460,13 +475,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     "timestamp": datetime.now().isoformat()
                 }
                 
-                await websocket.send_text(json.dumps({
-                    "type": "vitals_update",
-                    "data": vitals
-                }))
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "vitals_update",
+                        "data": vitals
+                    }))
+                except Exception as e:
+                    logger.warning(f"Failed to send vitals update: {e}")
+                    break
                 
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 # Transfer request endpoints
 @app.post("/transfer-request")
@@ -500,11 +524,7 @@ async def create_transfer_request(request: TransferRequest):
                 "data": new_request
             }
             
-            for connection in active_connections:
-                try:
-                    await connection.send_text(json.dumps(notification))
-                except:
-                    pass
+            await send_notification_to_all_connections(notification)
         
         return {"id": request_id, "status": "created", "message": "Transfer request created successfully"}
         
@@ -540,11 +560,7 @@ async def update_transfer_request(request_id: str, update_data: dict):
                 "data": updated_request
             }
             
-            for connection in active_connections:
-                try:
-                    await connection.send_text(json.dumps(notification))
-                except:
-                    pass
+            await send_notification_to_all_connections(notification)
         
         return updated_request
         

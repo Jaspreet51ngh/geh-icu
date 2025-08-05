@@ -16,6 +16,9 @@ import {
   Stethoscope,
   User,
   Send,
+  Hourglass,
+  CheckCircle,
+  XCircle,
 } from "lucide-react"
 import { VitalsChart } from "./vitals-chart"
 import { type Patient } from "@/lib/ml-service"
@@ -23,9 +26,21 @@ import { type Patient } from "@/lib/ml-service"
 interface PatientCardProps {
   patient: Patient
   onTransferRequest: (patient: Patient) => void
+  transferRequests?: any[]
 }
 
-export function PatientCard({ patient, onTransferRequest }: PatientCardProps) {
+export function PatientCard({ patient, onTransferRequest, transferRequests = [] }: PatientCardProps) {
+  // Check if this patient has a pending transfer request
+  const pendingRequest = transferRequests.find(
+    (req) => req.patient_id === patient.id && req.status === "pending"
+  )
+  const approvedRequest = transferRequests.find(
+    (req) => req.patient_id === patient.id && req.status === "doctor_approved"
+  )
+  const rejectedRequest = transferRequests.find(
+    (req) => req.patient_id === patient.id && req.status === "rejected"
+  )
+
   const getStatusColor = (prediction: any) => {
     if (!prediction) return "bg-slate-100 text-slate-800"
     
@@ -105,6 +120,50 @@ export function PatientCard({ patient, onTransferRequest }: PatientCardProps) {
     ? new Date(patient.lastUpdated).toLocaleTimeString()
     : "Unknown"
 
+  // Determine button state and text
+  const getButtonState = () => {
+    if (pendingRequest) {
+      return {
+        disabled: true,
+        text: "Waiting for Doctor's Approval",
+        icon: <Hourglass className="h-4 w-4 mr-2" />,
+        className: "bg-orange-500 hover:bg-orange-600 text-white disabled:bg-orange-400 disabled:cursor-not-allowed"
+      }
+    }
+    if (approvedRequest) {
+      return {
+        disabled: true,
+        text: "Transfer Approved by Doctor",
+        icon: <CheckCircle className="h-4 w-4 mr-2" />,
+        className: "bg-green-500 hover:bg-green-600 text-white disabled:bg-green-400 disabled:cursor-not-allowed"
+      }
+    }
+    if (rejectedRequest) {
+      return {
+        disabled: false,
+        text: "Request Transfer",
+        icon: <Send className="h-4 w-4 mr-2" />,
+        className: "bg-blue-600 hover:bg-blue-700 text-white"
+      }
+    }
+    if (patient.onVentilator || patient.onPressors) {
+      return {
+        disabled: true,
+        text: "On Life Support",
+        icon: <Stethoscope className="h-4 w-4 mr-2" />,
+        className: "bg-gray-400 text-white disabled:bg-gray-400 disabled:cursor-not-allowed"
+      }
+    }
+    return {
+      disabled: !patient.prediction?.transferReady,
+      text: "Request Transfer",
+      icon: <Send className="h-4 w-4 mr-2" />,
+      className: "bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-400 disabled:cursor-not-allowed"
+    }
+  }
+
+  const buttonState = getButtonState()
+
   return (
     <Card className={cardClasses}>
       <CardHeader className="pb-3">
@@ -134,6 +193,45 @@ export function PatientCard({ patient, onTransferRequest }: PatientCardProps) {
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {/* Transfer Request Status */}
+        {(pendingRequest || approvedRequest || rejectedRequest) && (
+          <div className={`p-3 rounded-lg border ${
+            pendingRequest ? "bg-orange-50 border-orange-200" :
+            approvedRequest ? "bg-green-50 border-green-200" :
+            "bg-red-50 border-red-200"
+          }`}>
+            <div className="flex items-center space-x-2">
+              {pendingRequest && <Hourglass className="h-4 w-4 text-orange-600" />}
+              {approvedRequest && <CheckCircle className="h-4 w-4 text-green-600" />}
+              {rejectedRequest && <XCircle className="h-4 w-4 text-red-600" />}
+              <span className={`text-sm font-medium ${
+                pendingRequest ? "text-orange-800" :
+                approvedRequest ? "text-green-800" :
+                "text-red-800"
+              }`}>
+                {pendingRequest && "Transfer Request Pending"}
+                {approvedRequest && "Transfer Approved by Doctor"}
+                {rejectedRequest && "Transfer Request Rejected"}
+              </span>
+            </div>
+            {pendingRequest && (
+              <p className="text-xs text-orange-700 mt-1">
+                Requested by {pendingRequest.nurse_id} • {new Date(pendingRequest.created_at).toLocaleString()}
+              </p>
+            )}
+            {approvedRequest && (
+              <p className="text-xs text-green-700 mt-1">
+                Approved by {approvedRequest.doctor_id} • {new Date(approvedRequest.updated_at).toLocaleString()}
+              </p>
+            )}
+            {rejectedRequest && (
+              <p className="text-xs text-red-700 mt-1">
+                Rejected by {rejectedRequest.doctor_id} • {new Date(rejectedRequest.updated_at).toLocaleString()}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* ML Prediction Section */}
         {patient.prediction && (
           <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-xl border border-blue-200">
@@ -256,11 +354,11 @@ export function PatientCard({ patient, onTransferRequest }: PatientCardProps) {
         <div className="flex space-x-2">
           <Button
             onClick={() => onTransferRequest(patient)}
-            disabled={!patient.prediction?.transferReady || patient.onVentilator || patient.onPressors}
-            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-400 disabled:cursor-not-allowed"
+            disabled={buttonState.disabled}
+            className={buttonState.className}
           >
-            <Send className="h-4 w-4 mr-2" />
-            {patient.onVentilator || patient.onPressors ? "On Life Support" : "Request Transfer"}
+            {buttonState.icon}
+            {buttonState.text}
           </Button>
         </div>
       </CardContent>
