@@ -289,11 +289,35 @@ class ICUDatabase:
             
             # Get patient database ID
             cursor.execute("SELECT id FROM patients WHERE patient_id = ?", (request_data['patient_id'],))
-            patient_db_id = cursor.fetchone()['id']
+            patient_result = cursor.fetchone()
+            if not patient_result:
+                raise ValueError(f"Patient {request_data['patient_id']} not found")
+            patient_db_id = patient_result['id']
+            
+            # Handle nurse ID - frontend sends simple IDs like "nurse1", but DB has usernames like "nurse_sarah"
+            nurse_id = request_data['nurse_id']
+            if nurse_id.startswith('nurse'):
+                # Map simple nurse IDs to database usernames
+                nurse_mapping = {
+                    'nurse1': 'nurse_sarah',
+                    'nurse2': 'nurse_mike'
+                }
+                nurse_username = nurse_mapping.get(nurse_id, 'nurse_sarah')  # Default to nurse_sarah
+            else:
+                nurse_username = nurse_id
             
             # Get nurse database ID
-            cursor.execute("SELECT id FROM users WHERE username = ?", (request_data['nurse_id'],))
-            nurse_db_id = cursor.fetchone()['id']
+            cursor.execute("SELECT id FROM users WHERE username = ?", (nurse_username,))
+            nurse_result = cursor.fetchone()
+            if not nurse_result:
+                # Create a default nurse if not found
+                cursor.execute("""
+                    INSERT INTO users (username, role, department_id, password_hash)
+                    VALUES (?, 'nurse', 1, 'password123')
+                """, (nurse_username,))
+                nurse_db_id = cursor.lastrowid
+            else:
+                nurse_db_id = nurse_result['id']
             
             # Generate unique request ID
             request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}"
@@ -370,13 +394,41 @@ class ICUDatabase:
             # Update status
             new_status = update_data.get('status', current_request['current_status'])
             
+            # Handle doctor ID mapping
+            reviewing_doctor_id = None
+            if 'doctor_id' in update_data and update_data['doctor_id']:
+                doctor_id = update_data['doctor_id']
+                if doctor_id.startswith('doctor'):
+                    # Map simple doctor IDs to database usernames
+                    doctor_mapping = {
+                        'doctor1': 'dr_smith',
+                        'doctor2': 'dr_jones'
+                    }
+                    doctor_username = doctor_mapping.get(doctor_id, 'dr_smith')
+                else:
+                    doctor_username = doctor_id
+                
+                # Get or create doctor
+                cursor.execute("SELECT id FROM users WHERE username = ?", (doctor_username,))
+                doctor_result = cursor.fetchone()
+                if doctor_result:
+                    reviewing_doctor_id = doctor_result['id']
+                else:
+                    # Create default doctor if not found
+                    cursor.execute("""
+                        INSERT INTO users (username, role, department_id, password_hash)
+                        VALUES (?, 'doctor', 1, 'password123')
+                    """, (doctor_username,))
+                    reviewing_doctor_id = cursor.lastrowid
+            
             cursor.execute("""
                 UPDATE transfer_requests SET
-                current_status = ?, target_department_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                current_status = ?, target_department_id = ?, reviewing_doctor_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE request_id = ?
             """, (
                 new_status,
                 update_data.get('target_department_id'),
+                reviewing_doctor_id,
                 update_data.get('notes', current_request['notes']),
                 request_id
             ))
