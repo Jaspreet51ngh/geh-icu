@@ -1,0 +1,211 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+
+    /* Professional GE HealthCare Colors - Version 6/7 Style */
+    --ge-navy: 210 100% 12%;
+    --ge-blue: 210 100% 50%;
+    --ge-light-blue: 210 100% 95%;
+    --teal-50: 166 76% 97%;
+    --teal-100: 167 85% 89%;
+    --teal-200: 168 84% 78%;
+    --teal-300: 171 77% 64%;
+    --teal-400: 172 66% 50%;
+    --teal-500: 173 80% 40%;
+    --teal-600: 175 84% 32%;
+    --teal-700: 175 77% 26%;
+    --teal-800: 176 69% 22%;
+    --teal-900: 176 61% 19%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Professional GE HealthCare Theme - Version 6/7 Style */
+.ge-header {
+  background: linear-gradient(135deg, hsl(var(--ge-navy)) 0%, hsl(var(--ge-blue)) 100%);
+}
+
+.teal-header {
+  background: linear-gradient(135deg, hsl(var(--teal-700)) 0%, hsl(var(--teal-600)) 100%);
+}
+
+.text-teal-primary {
+  color: hsl(var(--teal-700));
+}
+
+.text-teal-secondary {
+  color: hsl(var(--teal-600));
+}
+
+.bg-teal-primary {
+  background-color: hsl(var(--teal-600));
+}
+
+.bg-teal-secondary {
+  background-color: hsl(var(--teal-500));
+}
+
+.border-teal-primary {
+  border-color: hsl(var(--teal-600));
+}
+
+/* Enhanced Status Indicators */
+.status-normal {
+  @apply bg-green-100 text-green-800 border-green-200;
+}
+
+.status-elevated {
+  @apply bg-yellow-100 text-yellow-800 border-yellow-200;
+}
+
+.status-risky {
+  @apply bg-red-100 text-red-800 border-red-200;
+}
+
+.status-pending {
+  @apply bg-blue-100 text-blue-800 border-blue-200;
+}
+
+/* Critical Alert Animation */
+@keyframes critical-pulse {
+  0%,
+  100% {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  50% {
+    border-color: #dc2626;
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.3);
+  }
+}
+
+.critical-alert {
+  animation: critical-pulse 2s infinite;
+  border-width: 2px;
+}
+
+/* Professional Button Styles */
+.btn-teal-primary {
+  @apply bg-teal-600 hover:bg-teal-700 text-white font-semibold px-6 py-3 rounded-lg shadow-lg transition-all duration-300 hover:shadow-xl;
+}
+
+.btn-teal-secondary {
+  @apply bg-teal-500 hover:bg-teal-600 text-white font-semibold px-6 py-3 rounded-lg shadow-lg transition-all duration-300 hover:shadow-xl;
+}
+
+/* Real-time Chart Styles */
+.vitals-chart {
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+}
+
+/* Professional Card Styles */
+.professional-card {
+  @apply bg-white rounded-lg shadow-lg border border-slate-200 transition-all duration-300 hover:shadow-xl;
+}
+
+.professional-card-header {
+  @apply p-6 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white;
+}
+
+/* Notification Styles */
+.notification-badge {
+  @apply absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-6 w-6 flex items-center justify-center font-bold animate-pulse;
+}
+
+/* Loading States */
+.loading-shimmer {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Enhanced Animations */
+@keyframes fade-in-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.fade-in-up {
+  animation: fade-in-up 0.4s ease-out;
+}
+
+/* Professional Typography */
+.professional-heading {
+  @apply text-2xl font-bold text-slate-800;
+}
+
+.professional-subheading {
+  @apply text-lg font-semibold text-teal-700;
+}
+
+.professional-text {
+  @apply text-sm text-slate-600;
+}
