@@ -101,6 +101,17 @@ class ICUDatabase:
                 )
             """)
             
+            # Create patient_predictions table for caching ML predictions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS patient_predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    patient_id INTEGER NOT NULL,
+                    ml_prediction TEXT NOT NULL,
+                    prediction_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (patient_id) REFERENCES patients (id)
+                )
+            """)
+            
             # Create transfer_requests table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transfer_requests (
@@ -281,6 +292,108 @@ class ICUDatabase:
             
             return patients
     
+    def get_patient(self, patient_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single patient by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.*, pv.*, d.name as department_name
+                FROM patients p
+                LEFT JOIN patient_vitals pv ON p.id = pv.patient_id
+                LEFT JOIN departments d ON p.department_id = d.id
+                WHERE p.patient_id = ? AND p.is_active = 1
+            """, (patient_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            patient = {
+                'id': row['patient_id'],
+                'name': row['name'],
+                'age': row['age'],
+                'department': row['department_name'],
+                'bed': row['bed_number'],
+                'vitals': {
+                    'heartRate': row['heart_rate'],
+                    'spO2': row['spO2'],
+                    'respiratoryRate': row['respiratory_rate'],
+                    'systolicBP': row['systolic_bp'],
+                    'lactate': row['lactate'],
+                    'gcs': row['gcs']
+                },
+                'onVentilator': bool(row['on_ventilator']),
+                'onPressors': bool(row['on_pressors']),
+                'comorbidityScore': row['comorbidity_score'],
+                'admissionDate': row['admission_date'],
+                'lastUpdated': row['recorded_at']
+            }
+            
+            return patient
+    
+    def get_cached_prediction(self, patient_id: str) -> Optional[Dict[str, Any]]:
+        """Get cached ML prediction for a patient"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ml_prediction, prediction_timestamp
+                FROM patient_predictions
+                WHERE patient_id = (SELECT id FROM patients WHERE patient_id = ?)
+                ORDER BY prediction_timestamp DESC
+                LIMIT 1
+            """, (patient_id,))
+            
+            row = cursor.fetchone()
+            if row and row['ml_prediction']:
+                import json
+                prediction_data = json.loads(row['ml_prediction'])
+                
+                # Convert to the format expected by the frontend
+                if isinstance(prediction_data, dict):
+                    return {
+                        "prediction": prediction_data.get("prediction", "Not Ready"),
+                        "probability": prediction_data.get("probability", 0.0),
+                        "confidence": prediction_data.get("confidence", 0.0),
+                        "explanation": prediction_data.get("explanation", "Cached prediction"),
+                        "risk_factors": prediction_data.get("risk_factors", []),
+                        "model_version": prediction_data.get("model_version", "1.0.0"),
+                        "timestamp": prediction_data.get("timestamp", "")
+                    }
+                return prediction_data
+            return None
+    
+    def cache_prediction(self, patient_id: str, prediction: Dict[str, Any]) -> None:
+        """Cache ML prediction for a patient"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get patient database ID
+            cursor.execute("SELECT id FROM patients WHERE patient_id = ?", (patient_id,))
+            patient_result = cursor.fetchone()
+            if not patient_result:
+                return
+            
+            patient_db_id = patient_result['id']
+            
+            # Convert prediction to dictionary if it's a Pydantic model
+            if hasattr(prediction, 'dict'):
+                prediction_dict = prediction.dict()
+            elif hasattr(prediction, '__dict__'):
+                prediction_dict = prediction.__dict__
+            else:
+                prediction_dict = prediction
+            
+            # Insert or update prediction
+            import json
+            prediction_json = json.dumps(prediction_dict)
+            
+            cursor.execute("""
+                INSERT INTO patient_predictions (patient_id, ml_prediction)
+                VALUES (?, ?)
+            """, (patient_db_id, prediction_json))
+            
+            conn.commit()
+    
     # Transfer request operations
     def create_transfer_request(self, request_data: Dict[str, Any]) -> str:
         """Create a new transfer request"""
@@ -320,7 +433,8 @@ class ICUDatabase:
                 nurse_db_id = nurse_result['id']
             
             # Generate unique request ID
-            request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}"
+            #request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}"
+            request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}-{uuid4().hex[:6]}"
             
             cursor.execute("""
                 INSERT INTO transfer_requests 

@@ -15,6 +15,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import BaseEstimator
 from database import db
 from robust_predictor import RobustICUPredictor  # <-- ADD THIS
+from typing import List
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -155,15 +157,14 @@ def initialize_database_with_patients():
     for i in range(39, min(50, len(df))):
         row = df.iloc[i]
         
-        # Generate dynamic vitals
-        small_variation = random.uniform(-0.05, 0.05)
-        dynamic_vitals = {
-            "heartRate": round(float(row['HR'] * (1 + small_variation)), 1),
-            "spO2": round(float(row['SpO2'] * (1 + random.uniform(-0.03, 0.02))), 1),
-            "respiratoryRate": round(float(row['RESP'] * (1 + small_variation)), 1),
-            "systolicBP": round(float(row['ABPsys'] * (1 + random.uniform(-0.08, 0.08))), 1),
-            "lactate": round(float(row['lactate'] * (1 + small_variation)), 2),
-            "gcs": round(float(row['gcs']), 1)
+        # Use static vitals from CSV data without random variations
+        static_vitals = {
+            "heartRate": float(row['HR']),
+            "spO2": float(row['SpO2']),
+            "respiratoryRate": float(row['RESP']),
+            "systolicBP": float(row['ABPsys']),
+            "lactate": float(row['lactate']),
+            "gcs": float(row['gcs'])
         }
         
         # Use realistic patient names
@@ -173,7 +174,7 @@ def initialize_database_with_patients():
             "id": f"ICU-{i+1:03d}",
             "name": patient_name,
             "age": int(row['age']),
-            "vitals": dynamic_vitals,
+            "vitals": static_vitals,
             "onVentilator": bool(row['on_vent']),
             "onPressors": bool(row['on_pressors']),
             "comorbidityScore": float(row['comorbidity_score'])
@@ -187,19 +188,17 @@ def initialize_database_with_patients():
 
 # Load your trained model with fallback
 try:
-    model_path = os.path.join(os.path.dirname(__file__), "..", "robust_icu_predictor.pkl")
-    loaded_model = joblib.load(model_path)
+    # Import the robust predictor
+    import sys
+    sys.path.append(os.path.dirname(__file__))
+    from robust_predictor import RobustICUPredictor
     
-    # Check if the loaded model has the required methods
-    if hasattr(loaded_model, 'predict_dict') and hasattr(loaded_model, 'get_top_features'):
-        model = loaded_model
-        logger.info(f"RobustICUPredictor model loaded successfully from {model_path}")
-    else:
-        raise Exception("Loaded model doesn't have required methods (predict_dict/get_top_features)")
-
+    # Initialize the robust predictor with models directory
+    model = RobustICUPredictor(model_dir=os.path.join(os.path.dirname(__file__), "..", "models"))
+    logger.info("RobustICUPredictor model loaded successfully")
         
 except Exception as e:
-    logger.error(f"Failed to load original model: {e}")
+    logger.error(f"Failed to load robust model: {e}")
     # Use our simple fallback model
     logger.info("Using simple fallback model...")
     model = SimpleICUPredictor()
@@ -249,17 +248,29 @@ class TransferRequest(BaseModel):
     notes: Optional[str] = None
     created_at: str
     updated_at: str
-
+    ml_prediction: Dict[str, Any] 
+    
+# class TransferRequest(BaseModel):
+#     patient_id: str
+#     nurse_id: str
+#     doctor_id: Optional[str] = None
+#     department_admin_id: Optional[str] = None
+#     status: Optional[str] = "pending"  # Now optional with default
+#     target_department: Optional[str] = None
+#     notes: Optional[str] = None
+#     created_at: Optional[str] = datetime.utcnow().isoformat()
+#     updated_at: Optional[str] = datetime.utcnow().isoformat()
+    
 # In-memory storage for transfer requests (legacy - now using database)
 transfer_requests = {}
 
+#         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_transfer_readiness(patient: PatientData):
     if model is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
     
     try:
-        # Convert input to the format your model expects
         data_dict = {
             "HR": patient.HR,
             "SpO2": patient.SpO2,
@@ -273,44 +284,36 @@ async def predict_transfer_readiness(patient: PatientData):
             "on_pressors": int(patient.on_pressors)
         }
 
-        result = model.predict_dict(data_dict, ensemble_type='best')  # or "log_xgb" if you want
+        result = model.predict_dict(data_dict, ensemble_type='best')
         transfer_ready_prob = result["probability"]
-        prediction = 1 if result["prediction_label"] == "Ready" else 0
-        confidence = result["confidence"]
+        prediction = 1 if result["prediction"] == "Ready" else 0
+        confidence = max(transfer_ready_prob, 1 - transfer_ready_prob)
 
-        
-        # Generate explanation based on feature importance
-        feature_names = [
-            "Heart Rate", "SpO2", "Respiratory Rate", "Systolic BP",
-            "Lactate", "GCS", "Age", "Comorbidity Score", 
-            "Ventilator", "Pressors"
-        ]
-        
-        # Get feature importance if your model supports it
-        risk_factors = []
         try:
             risk_factors = model.get_top_features(data_dict, top_k=3)
         except Exception:
             risk_factors = ["Clinical assessment required"]
-        # Generate clinical explanation
-        if prediction == 1:  # Transfer ready
-            explanation = f"Patient shows stable clinical parameters with {transfer_ready_prob:.1%} confidence for safe transfer"
-        else:  # Not ready
-            explanation = f"Patient requires continued ICU monitoring with {(1-transfer_ready_prob):.1%} confidence"
-        
+
+        explanation = (
+            f"Patient shows stable clinical parameters with {confidence:.1%} confidence for safe transfer"
+            if prediction == 1
+            else f"Patient requires continued ICU monitoring with {confidence:.1%} confidence"
+        )
+
         return PredictionResponse(
             prediction="Ready" if prediction == 1 else "Not Ready",
             probability=float(transfer_ready_prob),
-            confidence=float(max(transfer_ready_prob, 1-transfer_ready_prob)),
+            confidence=float(confidence),
             explanation=explanation,
             risk_factors=risk_factors,
             model_version="1.0.0",
             timestamp=datetime.now().isoformat()
         )
-        
+
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
 
 @app.get("/health")
 async def health_check():
@@ -335,59 +338,65 @@ async def model_info():
         ]
     }
 
-@app.get("/patients")
+@app.get("/patients", response_model=List[dict])
 async def get_patients():
     """Get all patients with current vitals and ML predictions from database"""
     try:
-        # Get patients from database
         db_patients = db.get_all_patients()
-        
         patients = []
+
         for db_patient in db_patients:
-            # Get prediction for this patient
-            patient_data = PatientData(
-                HR=db_patient['vitals']['heartRate'],
-                SpO2=db_patient['vitals']['spO2'],
-                RESP=db_patient['vitals']['respiratoryRate'],
-                ABPsys=db_patient['vitals']['systolicBP'],
-                lactate=db_patient['vitals']['lactate'],
-                gcs=db_patient['vitals']['gcs'],
-                age=db_patient['age'],
-                comorbidity_score=db_patient['comorbidityScore'],
-                on_vent=db_patient['onVentilator'],
-                on_pressors=db_patient['onPressors']
-            )
-            
-            try:
-                prediction = await predict_transfer_readiness(patient_data)
-            except Exception as e:
-                logger.error(f"Prediction failed for patient {db_patient['id']}: {e}")
-                # Create a fallback prediction
-                prediction = PredictionResponse(
-                    prediction="Not Ready",
-                    probability=0.3,
-                    confidence=0.7,
-                    explanation="Unable to assess - requires clinical evaluation",
-                    risk_factors=["Assessment unavailable"],
-                    model_version="1.0.0",
-                    timestamp=datetime.now().isoformat()
-                )
-            
-            # Convert prediction to frontend format
+            patient_id = db_patient['id']
+            cached_prediction = db.get_cached_prediction(patient_id)
+
+            # Try using cached prediction if available
+            if cached_prediction is not None:
+                try:
+                    prediction = PredictionResponse(**cached_prediction)
+                except Exception as e:
+                    logger.warning(f"Invalid cached prediction for patient {patient_id}, regenerating. Error: {e}")
+                    cached_prediction = None
+
+            # If no valid cached prediction, run model
+            if cached_prediction is None:
+                try:
+                    patient_data = PatientData(
+                        HR=db_patient['vitals']['heartRate'],
+                        SpO2=db_patient['vitals']['spO2'],
+                        RESP=db_patient['vitals']['respiratoryRate'],
+                        ABPsys=db_patient['vitals']['systolicBP'],
+                        lactate=db_patient['vitals']['lactate'],
+                        gcs=db_patient['vitals']['gcs'],
+                        age=db_patient['age'],
+                        comorbidity_score=db_patient['comorbidityScore'],
+                        on_vent=db_patient['onVentilator'],
+                        on_pressors=db_patient['onPressors']
+                    )
+                    prediction = await predict_transfer_readiness(patient_data)
+                    db.cache_prediction(patient_id, prediction.dict())
+
+                except Exception as e:
+                    logger.error(f"Prediction failed for patient {patient_id}: {e}")
+                    raise HTTPException(status_code=500, detail=f"Prediction failed for patient {patient_id}")
+
+            # Round and prepare frontend-friendly prediction format
+            confidence_percent = round(prediction.confidence * 100, 1)
+
             frontend_prediction = {
                 "transferReady": prediction.prediction == "Ready",
-                "confidence": prediction.confidence,
+                "confidence": confidence_percent,
                 "reasoning": prediction.explanation,
                 "riskFactors": prediction.risk_factors,
                 "timestamp": prediction.timestamp
             }
-            
+
+            # Full patient object with prediction
             patient = {
-                "id": db_patient['id'],
+                "id": patient_id,
                 "name": db_patient['name'],
                 "age": db_patient['age'],
                 "department": db_patient.get('department', 'ICU'),
-                "bed": db_patient.get('bed', f"Bed-{db_patient['id']}"),
+                "bed": db_patient.get('bed', f"Bed-{patient_id}"),
                 "vitals": db_patient['vitals'],
                 "onVentilator": db_patient['onVentilator'],
                 "onPressors": db_patient['onPressors'],
@@ -395,11 +404,93 @@ async def get_patients():
                 "prediction": frontend_prediction,
                 "lastUpdated": db_patient['lastUpdated']
             }
-            
+
             patients.append(patient)
-        
+
         return patients
-        
+
+    except Exception as e:
+        logger.error(f"Error getting patients from database: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve patients")
+
+@app.get("/patients")
+async def get_patients():
+    """Get all patients with current vitals and ML predictions from database"""
+    try:
+        db_patients = db.get_all_patients()
+        patients = []
+
+        for db_patient in db_patients:
+            patient_id = db_patient['id']
+            cached_prediction = db.get_cached_prediction(patient_id)
+
+            if cached_prediction is not None:
+                try:
+                    prediction = PredictionResponse(**cached_prediction)
+                except Exception as e:
+                    logger.warning(f"Invalid cached prediction for patient {patient_id}, regenerating. Error: {e}")
+                    cached_prediction = None  # Fallback to regeneration
+
+            if cached_prediction is None:
+                try:
+                    patient_data = PatientData(
+                        HR=db_patient['vitals']['heartRate'],
+                        SpO2=db_patient['vitals']['spO2'],
+                        RESP=db_patient['vitals']['respiratoryRate'],
+                        ABPsys=db_patient['vitals']['systolicBP'],
+                        lactate=db_patient['vitals']['lactate'],
+                        gcs=db_patient['vitals']['gcs'],
+                        age=db_patient['age'],
+                        comorbidity_score=db_patient['comorbidityScore'],
+                        on_vent=db_patient['onVentilator'],
+                        on_pressors=db_patient['onPressors']
+                    )
+
+                    prediction = await predict_transfer_readiness(patient_data)
+                    db.cache_prediction(patient_id, prediction.dict())
+
+                except Exception as e:
+                    logger.error(f"Prediction failed for patient {patient_id}: {e}")
+                    prediction = PredictionResponse(
+                        prediction="Not Ready",
+                        probability=0.3,
+                        confidence=0.7,
+                        explanation="Unable to assess - requires clinical evaluation",
+                        risk_factors=["Assessment unavailable"],
+                        model_version="1.0.0",
+                        timestamp=datetime.now().isoformat()
+                    )
+                    db.cache_prediction(patient_id, prediction.dict())
+
+            # Round the confidence value to 1 decimal place
+            confidence_percent = round(prediction.confidence * 100, 1)
+
+            frontend_prediction = {
+                "transferReady": prediction.prediction == "Ready",
+                "confidence": confidence_percent,
+                "reasoning": prediction.explanation,
+                "riskFactors": prediction.risk_factors,
+                "timestamp": prediction.timestamp
+            }
+
+            patient = {
+                "id": patient_id,
+                "name": db_patient['name'],
+                "age": db_patient['age'],
+                "department": db_patient.get('department', 'ICU'),
+                "bed": db_patient.get('bed', f"Bed-{patient_id}"),
+                "vitals": db_patient['vitals'],
+                "onVentilator": db_patient['onVentilator'],
+                "onPressors": db_patient['onPressors'],
+                "comorbidityScore": db_patient['comorbidityScore'],
+                "prediction": frontend_prediction,
+                "lastUpdated": db_patient['lastUpdated']
+            }
+
+            patients.append(patient)
+
+        return patients
+
     except Exception as e:
         logger.error(f"Error getting patients from database: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve patients")
@@ -407,32 +498,28 @@ async def get_patients():
 @app.get("/patient/{patient_id}/vitals")
 async def get_patient_vitals(patient_id: str):
     """Get real-time vitals for a specific patient"""
-    if df is None:
-        raise HTTPException(status_code=500, detail="Dataset not loaded")
-    
-    # Extract patient number from ID (e.g., "ICU-001" -> 0)
     try:
-        patient_num = int(patient_id.split('-')[1]) - 1
-        if patient_num >= len(df):
+        # Get patient from database
+        patient = db.get_patient(patient_id)
+        if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
-    except:
-        raise HTTPException(status_code=400, detail="Invalid patient ID")
-    
-    row = df.iloc[patient_num]
-    
-    # Add some realistic variation to simulate real-time data
-    variation = 0.05  # 5% variation
-    vitals = {
-        "heartRate": float(row['HR'] * (1 + random.uniform(-variation, variation))),
-        "spO2": float(row['SpO2'] * (1 + random.uniform(-variation, variation))),
-        "respiratoryRate": float(row['RESP'] * (1 + random.uniform(-variation, variation))),
-        "systolicBP": float(row['ABPsys'] * (1 + random.uniform(-variation, variation))),
-        "lactate": float(row['lactate'] * (1 + random.uniform(-variation, variation))),
-        "gcs": float(row['gcs']),
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    return vitals
+        
+        # Return static vitals from database
+        vitals = {
+            "heartRate": patient['vitals']['heartRate'],
+            "spO2": patient['vitals']['spO2'],
+            "respiratoryRate": patient['vitals']['respiratoryRate'],
+            "systolicBP": patient['vitals']['systolicBP'],
+            "lactate": patient['vitals']['lactate'],
+            "gcs": patient['vitals']['gcs'],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return vitals
+        
+    except Exception as e:
+        logger.error(f"Error getting patient vitals: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve patient vitals")
 
 # WebSocket for real-time updates
 @app.websocket("/ws")
@@ -442,36 +529,23 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            # Send real-time patient updates every 5 seconds
-            await asyncio.sleep(5)
+            # Send real-time patient updates every 30 seconds (much less frequent)
+            await asyncio.sleep(30)
             
-            if df is not None:
-                # Get random patient data from our range (40-50)
-                patient_num = random.randint(39, min(49, len(df)-1))
-                row = df.iloc[patient_num]
+            # Get random patient from database
+            patients = db.get_all_patients()
+            if patients:
+                patient = random.choice(patients)
                 
-                # Add dynamic variation for realism with different stability patterns
-                base_variation = 0.05
-                stability_pattern = random.choice(['stable', 'unstable', 'improving', 'deteriorating'])
-                
-                if stability_pattern == 'stable':
-                    variation = base_variation * 0.5
-                elif stability_pattern == 'unstable':
-                    variation = base_variation * 2.0
-                elif stability_pattern == 'improving':
-                    variation = base_variation * 0.8
-                else:  # deteriorating
-                    variation = base_variation * 1.5
-                
+                # Send static vitals from database (no new predictions)
                 vitals = {
-                    "patient_id": f"ICU-{patient_num+1:03d}",
-                    "heartRate": float(row['HR'] * (1 + random.uniform(-variation, variation))),
-                    "spO2": float(row['SpO2'] * (1 + random.uniform(-variation * 0.5, variation * 0.3))),  # SpO2 varies less
-                    "respiratoryRate": float(row['RESP'] * (1 + random.uniform(-variation, variation))),
-                    "systolicBP": float(row['ABPsys'] * (1 + random.uniform(-variation, variation))),
-                    "lactate": float(row['lactate'] * (1 + random.uniform(-variation * 0.8, variation * 1.2))),
-                    "gcs": float(row['gcs'] * (1 + random.uniform(-variation * 0.3, variation * 0.3))),  # GCS varies less
-                    "stability_pattern": stability_pattern,
+                    "patient_id": patient['id'],
+                    "heartRate": patient['vitals']['heartRate'],
+                    "spO2": patient['vitals']['spO2'],
+                    "respiratoryRate": patient['vitals']['respiratoryRate'],
+                    "systolicBP": patient['vitals']['systolicBP'],
+                    "lactate": patient['vitals']['lactate'],
+                    "gcs": patient['vitals']['gcs'],
                     "timestamp": datetime.now().isoformat()
                 }
                 
@@ -494,43 +568,63 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Transfer request endpoints
 @app.post("/transfer-request")
-async def create_transfer_request(request: TransferRequest):
-    """Create a new transfer request in database"""
+def create_transfer_request(request_data: TransferRequest):
     try:
-        # Convert to database format
-        request_data = {
-            "patient_id": request.patient_id,
-            "nurse_id": request.nurse_id,
-            "ml_prediction": {
-                "transferReady": True,  # If nurse is requesting, patient should be ready
-                "confidence": 0.85,
-                "reasoning": "Nurse assessment indicates patient is ready for transfer",
-                "riskFactors": ["Clinical assessment required"]
-            },
-            "notes": request.notes or "Transfer request initiated by nurse"
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Validate patient exists
+        cursor.execute("SELECT id FROM patients WHERE id = ?", (request_data.patient_id,))
+        patient_result = cursor.fetchone()
+        if not patient_result:
+            logger.error(f"Patient not found: {request_data.patient_id}")
+            raise HTTPException(status_code=404, detail="Patient not found")
+
+        # ✅ Generate unique request_id each time
+        request_id = f"TR-{uuid.uuid4().hex[:8]}"
+
+        # Insert into DB
+        cursor.execute(
+            """
+            INSERT INTO transfer_requests (
+                request_id,
+                patient_id,
+                nurse_id,
+                doctor_id,
+                department_admin_id,
+                status,
+                target_department,
+                notes,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_id,
+                request_data.patient_id,
+                request_data.nurse_id,
+                request_data.doctor_id,
+                request_data.department_admin_id,
+                request_data.status,
+                request_data.target_department,
+                request_data.notes,
+                request_data.created_at,
+                request_data.updated_at
+            )
+        )
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "message": "Transfer request created successfully",
+            "request_id": request_id
         }
-        
-        # Create in database
-        request_id = db.create_transfer_request(request_data)
-        
-        # Get the created request
-        created_request = db.get_transfer_requests()
-        new_request = next((req for req in created_request if req['id'] == request_id), None)
-        
-        if new_request:
-            # Notify WebSocket clients
-            notification = {
-                "type": "transfer_request_created",
-                "data": new_request
-            }
-            
-            await send_notification_to_all_connections(notification)
-        
-        return {"id": request_id, "status": "created", "message": "Transfer request created successfully"}
-        
+
     except Exception as e:
-        logger.error(f"Error creating transfer request: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create transfer request")
+        logger.exception("Error creating transfer request")
+        raise HTTPException(status_code=500, detail=f"Transfer request failed: {str(e)}")
 
 @app.get("/transfer-requests")
 async def get_transfer_requests():
