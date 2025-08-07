@@ -63,16 +63,11 @@ export default function Dashboard() {
 
     initializeData()
 
-    // Auto-refresh patients every 2.5 seconds
-    const interval = setInterval(() => {
-      fetchPatients()
-    }, 2500)
-    // Cleanup listeners and interval on unmount
+    // Cleanup listeners on unmount
     return () => {
       MLPredictionService.removeListener('vitals_update', handleVitalsUpdate)
       MLPredictionService.removeListener('transfer_request_created', handleTransferRequestCreated)
       MLPredictionService.removeListener('transfer_request_updated', handleTransferRequestUpdated)
-      clearInterval(interval)
     }
   }, [])
 

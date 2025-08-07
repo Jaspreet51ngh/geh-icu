@@ -506,7 +506,7 @@ export default function DoctorReview() {
                                     </div>
                                     <div className="flex justify-between">
                                       <span>Confidence:</span>
-                                      <span className="font-medium">{(patient.prediction.confidence * 100).toFixed(1)}%</span>
+                                      <span className="font-medium">{(patient.prediction.confidence).toFixed(1)}%</span>
                                     </div>
                                     <div>
                                       <span className="font-medium">Reasoning:</span>
