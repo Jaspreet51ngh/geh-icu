@@ -175,55 +175,86 @@ def initialize_database_with_patients():
     
     logger.info("Database initialization complete")
 
+def _passes_clinical_rules(p: dict) -> bool:
+    try:
+        if p.get('onVentilator') or p.get('onPressors'):
+            return False
+        # Simple hemodynamic stability heuristic
+        hr = p['vitals']['heartRate']
+        spo2 = p['vitals']['spO2']
+        resp = p['vitals']['respiratoryRate']
+        sbp = p['vitals']['systolicBP']
+        lact = p['vitals']['lactate']
+        gcs = p['vitals']['gcs']
+        stable = (60 <= hr <= 110) and (spo2 >= 94) and (12 <= resp <= 22) and (90 <= sbp <= 160) and (lact < 2.2) and (gcs >= 13)
+        return stable
+    except Exception:
+        return False
+
 async def simulate_vitals_loop():
-    """Background task to simulate vitals every 10–30 seconds and refresh prediction cache"""
+    """Background task to simulate vitals every 5–10 seconds across all active patients, refresh predictions, and maintain ready_since."""
     await asyncio.sleep(2)
     while True:
         try:
-            await asyncio.sleep(random.randint(10, 30))
+            await asyncio.sleep(random.randint(5, 10))
             patients = db.get_all_patients()
             if not patients:
                 continue
-            patient = random.choice(patients)
+            for patient in patients:
+                # Random small perturbations
+                new_vitals = {
+                    "heartRate": max(40, min(140, patient['vitals']['heartRate'] + random.uniform(-3, 3))),
+                    "spO2": max(85, min(100, patient['vitals']['spO2'] + random.uniform(-0.8, 0.8))),
+                    "respiratoryRate": max(8, min(30, patient['vitals']['respiratoryRate'] + random.uniform(-1.5, 1.5))),
+                    "systolicBP": max(80, min(200, patient['vitals']['systolicBP'] + random.uniform(-4, 4))),
+                    "lactate": max(0.5, min(6.0, patient['vitals']['lactate'] + random.uniform(-0.15, 0.15))),
+                    "gcs": max(3, min(15, patient['vitals']['gcs'] + random.uniform(-0.2, 0.2))),
+                }
 
-            # Random small perturbations
-            new_vitals = {
-                "heartRate": max(40, min(140, patient['vitals']['heartRate'] + random.uniform(-3, 3))),
-                "spO2": max(85, min(100, patient['vitals']['spO2'] + random.uniform(-0.8, 0.8))),
-                "respiratoryRate": max(8, min(30, patient['vitals']['respiratoryRate'] + random.uniform(-1.5, 1.5))),
-                "systolicBP": max(80, min(200, patient['vitals']['systolicBP'] + random.uniform(-4, 4))),
-                "lactate": max(0.5, min(6.0, patient['vitals']['lactate'] + random.uniform(-0.15, 0.15))),
-                "gcs": max(3, min(15, patient['vitals']['gcs'] + random.uniform(-0.2, 0.2))),
-            }
-
-            db.update_patient_vitals(
-                patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
-                vitals=new_vitals,
-                on_ventilator=patient['onVentilator'],
-                on_pressors=patient['onPressors'],
-                comorbidity_score=patient.get('comorbidityScore', 0) or 0,
-            )
-
-            # Recompute prediction and cache
-            try:
-                pdata = PatientData(
-                    HR=new_vitals['heartRate'],
-                    SpO2=new_vitals['spO2'],
-                    RESP=new_vitals['respiratoryRate'],
-                    ABPsys=new_vitals['systolicBP'],
-                    lactate=new_vitals['lactate'],
-                    gcs=new_vitals['gcs'],
-                    age=patient['age'],
-                    comorbidity_score=patient.get('comorbidityScore', 0) or 0,
-                    on_vent=patient['onVentilator'],
+                db.update_patient_vitals(
+                    patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
+                    vitals=new_vitals,
+                    on_ventilator=patient['onVentilator'],
                     on_pressors=patient['onPressors'],
+                    comorbidity_score=patient.get('comorbidityScore', 0) or 0,
                 )
-                pred = await predict_transfer_readiness(pdata)
-                db.cache_prediction(patient['id'], pred.dict())
-            except Exception as e:
-                logger.warning(f"Prediction refresh failed: {e}")
 
-            await broadcast_vitals_and_prediction_update(patient['id'])
+                # Recompute prediction and cache
+                try:
+                    pdata = PatientData(
+                        HR=new_vitals['heartRate'],
+                        SpO2=new_vitals['spO2'],
+                        RESP=new_vitals['respiratoryRate'],
+                        ABPsys=new_vitals['systolicBP'],
+                        lactate=new_vitals['lactate'],
+                        gcs=new_vitals['gcs'],
+                        age=patient['age'],
+                        comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+                        on_vent=patient['onVentilator'],
+                        on_pressors=patient['onPressors'],
+                    )
+                    pred = await predict_transfer_readiness(pdata)
+                    db.cache_prediction(patient['id'], pred.dict())
+
+                    # Gate blinking state by clinical rules and no transfer request
+                    ready_by_ml = (pred.prediction == "Ready")
+                    if ready_by_ml and _passes_clinical_rules({**patient, 'vitals': new_vitals}):
+                        # Ensure no active transfer request exists for this patient
+                        try:
+                            requests = db.get_transfer_requests()
+                            has_any = any(r.get('patient_id') == patient['id'] and r.get('status') in ['pending','doctor_approved','admin_approved','completed'] for r in requests)
+                        except Exception:
+                            has_any = False
+                        if not has_any:
+                            db.set_ready_state(patient['id'], True, pred.timestamp)
+                        else:
+                            db.set_ready_state(patient['id'], False)
+                    else:
+                        db.set_ready_state(patient['id'], False)
+                except Exception as e:
+                    logger.warning(f"Prediction refresh failed: {e}")
+
+                await broadcast_vitals_and_prediction_update(patient['id'])
         except Exception as e:
             logger.error(f"Vitals simulation loop error: {e}")
 
@@ -444,10 +475,12 @@ async def get_prediction_for_patient(patient_id: str):
             pred = await predict_transfer_readiness(pdata)
             db.cache_prediction(patient_id, pred.dict())
             cached = pred.dict()
-        # Normalize to minimal shape expected by frontend getMLPrediction helper
+        # Normalize to minimal shape expected by frontend getMLPrediction helper, include ready_since if tracked
+        is_ready = (cached.get('prediction') in ['Ready', 1, True, 'ready'])
+        ready_since = db.get_ready_since(patient_id) if is_ready else None
         return {
-            "prediction": "ready" if (cached.get('prediction') in ['Ready', 1, True, 'ready']) else "not_ready",
-            "timestamp": cached.get('timestamp', datetime.now().isoformat())
+            "prediction": "ready" if is_ready else "not_ready",
+            "timestamp": ready_since or cached.get('timestamp', datetime.now().isoformat()),
         }
     except HTTPException:
         raise

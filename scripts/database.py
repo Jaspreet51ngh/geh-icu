@@ -168,6 +168,18 @@ class ICUDatabase:
                     FOREIGN KEY (target_department_id) REFERENCES departments (id)
                 )
             """)
+
+            # Create patient_ready_state table for persistent ready-since tracking
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS patient_ready_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    patient_id INTEGER NOT NULL UNIQUE,
+                    ready_since TIMESTAMP,
+                    currently_ready BOOLEAN DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (patient_id) REFERENCES patients (id)
+                )
+            """)
             
             conn.commit()
             
@@ -673,6 +685,53 @@ class ICUDatabase:
             
             conn.commit()
             return True
+
+    def set_ready_state(self, patient_external_id: str, is_ready: bool, timestamp: Optional[str] = None) -> None:
+        """Persist or clear ready_since for a patient depending on is_ready flag."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM patients WHERE patient_id = ?", (patient_external_id,))
+            row = cursor.fetchone()
+            if not row:
+                return
+            pid = row['id']
+            if is_ready:
+                # Insert if absent, set ready_since if not set
+                cursor.execute("SELECT ready_since FROM patient_ready_state WHERE patient_id = ?", (pid,))
+                rs = cursor.fetchone()
+                if rs is None:
+                    cursor.execute(
+                        "INSERT INTO patient_ready_state (patient_id, ready_since, currently_ready) VALUES (?, ?, 1)",
+                        (pid, timestamp or datetime.now().isoformat()),
+                    )
+                else:
+                    if not rs['ready_since']:
+                        cursor.execute(
+                            "UPDATE patient_ready_state SET ready_since = ?, currently_ready = 1, updated_at = CURRENT_TIMESTAMP WHERE patient_id = ?",
+                            (timestamp or datetime.now().isoformat(), pid),
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE patient_ready_state SET currently_ready = 1, updated_at = CURRENT_TIMESTAMP WHERE patient_id = ?",
+                            (pid,),
+                        )
+            else:
+                # Clear current readiness and ready_since
+                cursor.execute(
+                    "INSERT INTO patient_ready_state (patient_id, ready_since, currently_ready) VALUES (?, NULL, 0) ON CONFLICT(patient_id) DO UPDATE SET ready_since = NULL, currently_ready = 0, updated_at = CURRENT_TIMESTAMP",
+                    (pid,),
+                )
+            conn.commit()
+
+    def get_ready_since(self, patient_external_id: str) -> Optional[str]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT prs.ready_since FROM patient_ready_state prs JOIN patients p ON prs.patient_id = p.id WHERE p.patient_id = ? AND prs.currently_ready = 1",
+                (patient_external_id,),
+            )
+            row = cursor.fetchone()
+            return row['ready_since'] if row and row['ready_since'] else None
 
     def get_patient_internal_id(self, patient_external_id: str) -> Optional[int]:
         with self.get_connection() as conn:

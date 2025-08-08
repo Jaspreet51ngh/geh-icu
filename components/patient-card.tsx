@@ -114,8 +114,9 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
     }
   }
 
+  const shouldBlink = !!(patient.prediction?.transferReady && !pendingRequest && !doctorApprovedRequest && !adminApprovedRequest && !patient.onVentilator && !patient.onPressors)
   const cardClasses = `professional-card transition-all duration-500 hover:shadow-2xl ${
-    patient.prediction?.transferReady 
+    shouldBlink
       ? "border-green-300 hover:border-green-400 animate-pulse"
       : patient.prediction?.confidence && patient.prediction.confidence < 0.3
       ? "border-red-200 hover:border-red-300"
@@ -312,7 +313,7 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
           </div>
         )}
 
-        {patient.prediction?.transferReady && readySinceText && (
+        {shouldBlink && readySinceText && (
           <div className="p-3 rounded-lg border border-green-300 bg-green-50 animate-pulse">
             <div className="flex items-center gap-2 text-green-800 text-sm">
               <Clock className="h-4 w-4" />
