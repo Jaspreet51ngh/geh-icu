@@ -22,6 +22,10 @@ import { TransferRequestModal } from "@/components/transfer-request-modal"
 import { NotificationPanel } from "@/components/notification-panel"
 import { MLPredictionService, type Patient, type TransferRequest } from "@/lib/ml-service"
 import { useRouter } from "next/navigation"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+// duplicate import removed
 
 export default function Dashboard() {
   const [patients, setPatients] = useState<Patient[]>([])
@@ -33,6 +37,9 @@ export default function Dashboard() {
   const [notifications, setNotifications] = useState<any[]>([])
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
   const router = useRouter()
+  const [showNewPatient, setShowNewPatient] = useState(false)
+  const [npName, setNpName] = useState("")
+  const [npAge, setNpAge] = useState("")
 
   // Initialize WebSocket connection and fetch data
   useEffect(() => {
@@ -92,25 +99,26 @@ export default function Dashboard() {
   }
 
   const handleVitalsUpdate = (data: any) => {
-    setPatients(prevPatients => 
-      prevPatients.map(patient => 
-        patient.id === data.patient_id 
-          ? { 
-              ...patient, 
-              vitals: { 
+    setPatients((prevPatients) => {
+      const next = prevPatients.map((patient) =>
+        patient.id === data.patient_id
+          ? {
+              ...patient,
+              vitals: {
                 ...patient.vitals,
                 heartRate: data.heartRate,
                 spO2: data.spO2,
                 respiratoryRate: data.respiratoryRate,
                 systolicBP: data.systolicBP,
                 lactate: data.lactate,
-                gcs: data.gcs
+                gcs: data.gcs,
               },
-              lastUpdated: new Date()
+              lastUpdated: new Date().toISOString(),
             }
-          : patient
+          : patient,
       )
-    )
+      return next
+    })
     setLastUpdate(new Date())
   }
 
@@ -155,7 +163,7 @@ export default function Dashboard() {
   // Calculate dashboard statistics
   const totalPatients = patients.length
   const transferReadyPatients = patients.filter(p => p.prediction?.transferReady).length
-  const criticalPatients = patients.filter(p => p.prediction?.confidence < 0.3).length
+  const criticalPatients = patients.filter(p => (p.prediction?.confidence ?? 1) < 0.3).length
   const pendingTransfers = transferRequests.filter(r => r.status === 'pending').length
 
   if (loading) {
@@ -209,6 +217,12 @@ export default function Dashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Nurse-only new patient button */}
+        <div className="flex justify-end mb-4">
+          <Button className="bg-teal-600 hover:bg-teal-700 text-white" onClick={() => setShowNewPatient(true)}>
+            + New Patient
+          </Button>
+        </div>
         {error && (
           <Alert className="mb-6">
             <AlertTriangle className="h-4 w-4" />
@@ -274,11 +288,12 @@ export default function Dashboard() {
         {/* Patient Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {patients.map((patient) => (
-            <PatientCard
+                <PatientCard
               key={patient.id}
               patient={patient}
               onTransferRequest={() => handleTransferRequest(patient)}
               transferRequests={transferRequests}
+                  currentRole={'nurse'}
             />
           ))}
         </div>
@@ -312,6 +327,39 @@ export default function Dashboard() {
           setNotifications(prev => prev.filter(n => n.id !== id))
         }
       />
+
+      {/* New Patient Dialog */}
+      <Dialog open={showNewPatient} onOpenChange={setShowNewPatient}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New ICU Patient</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label>Name</Label>
+              <Input value={npName} onChange={(e) => setNpName(e.target.value)} placeholder="Full name" />
+            </div>
+            <div>
+              <Label>Age</Label>
+              <Input type="number" value={npAge} onChange={(e) => setNpAge(e.target.value)} placeholder="Age" />
+            </div>
+            <div className="flex justify-end gap-2 mt-2">
+              <Button variant="outline" onClick={() => setShowNewPatient(false)}>Cancel</Button>
+              <Button onClick={async () => {
+                try {
+                  await MLPredictionService.addNewPatient({ name: npName || 'New Patient', age: parseInt(npAge || '40', 10) })
+                  setShowNewPatient(false)
+                  setNpName("")
+                  setNpAge("")
+                  fetchPatients()
+                } catch (e) {
+                  console.error(e)
+                }
+              }} className="bg-teal-600 hover:bg-teal-700 text-white">Save</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

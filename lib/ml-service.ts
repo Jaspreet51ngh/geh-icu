@@ -424,6 +424,27 @@ export class MLPredictionService {
     }
   }
 
+  static async addNewPatient(payload: {
+    name: string
+    age: number
+    gender?: string
+    vitals?: Partial<PatientVitals>
+  }): Promise<{ success: boolean }> {
+    const body: any = {
+      name: payload.name,
+      age: payload.age,
+      gender: payload.gender || 'Unknown',
+      vitals: payload.vitals || {},
+    }
+    const res = await fetch(`${this.API_BASE_URL}/add-patient`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error('Failed to add patient')
+    return await res.json()
+  }
+
   private static fallbackPrediction(patient: Patient): RichPrediction {
     try {
       const sofaScore = this.calculateSOFAScore(patient)

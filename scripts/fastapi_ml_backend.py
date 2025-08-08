@@ -196,7 +196,7 @@ async def simulate_vitals_loop():
     await asyncio.sleep(2)
     while True:
         try:
-            await asyncio.sleep(random.randint(5, 10))
+            await asyncio.sleep(random.randint(1, 2))
             patients = db.get_all_patients()
             if not patients:
                 continue
@@ -782,6 +782,45 @@ async def get_discharged_patients():
     except Exception as e:
         logger.error(f"Failed to fetch discharged patients: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch discharged patients")
+
+@app.post("/add-patient")
+async def add_patient(payload: dict):
+    try:
+        # Build patient data
+        name = payload.get('name') or f"Patient {random.randint(1000,9999)}"
+        age = int(payload.get('age') or random.randint(18, 90))
+        gender = payload.get('gender', 'Unknown')
+        vit = payload.get('vitals') or {}
+        vitals = {
+            "heartRate": float(vit.get('heartRate') or random.uniform(65, 95)),
+            "spO2": float(vit.get('spO2') or random.uniform(95, 99)),
+            "respiratoryRate": float(vit.get('respiratoryRate') or random.uniform(12, 20)),
+            "systolicBP": float(vit.get('systolicBP') or random.uniform(105, 135)),
+            "lactate": float(vit.get('lactate') or random.uniform(0.8, 2.0)),
+            "gcs": float(vit.get('gcs') or random.uniform(13, 15)),
+        }
+        new_id = f"ICU-{random.randint(100,999)}"
+        patient_data = {
+            "id": new_id,
+            "name": name,
+            "age": age,
+            "vitals": vitals,
+            "onVentilator": False,
+            "onPressors": False,
+            "comorbidityScore": 0,
+        }
+        db.add_patient(patient_data)
+        # Warm a prediction cache entry
+        pdata = PatientData(
+            HR=vitals['heartRate'], SpO2=vitals['spO2'], RESP=vitals['respiratoryRate'], ABPsys=vitals['systolicBP'],
+            lactate=vitals['lactate'], gcs=vitals['gcs'], age=age, comorbidity_score=0, on_vent=False, on_pressors=False,
+        )
+        pred = await predict_transfer_readiness(pdata)
+        db.cache_prediction(new_id, pred.dict())
+        return {"success": True, "patient_id": new_id}
+    except Exception as e:
+        logger.error(f"Failed to add patient: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add patient")
 
 @app.get("/departments")
 async def get_departments():

@@ -10,6 +10,7 @@ const navigation = [
   { name: "Patients", href: "/patients", icon: Users },
   { name: "Incoming Queue", href: "/queue", icon: Clock },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Discharged", href: "/common-dashboard", icon: Users },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 

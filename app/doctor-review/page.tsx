@@ -365,6 +365,7 @@ export default function DoctorReview() {
                   patient={patient}
                   onTransferRequest={() => handleTransferRequest(patient)}
                   transferRequests={transferRequests}
+                  currentRole={'doctor'}
                 />
               ))}
             </div>

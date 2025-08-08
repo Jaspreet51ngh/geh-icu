@@ -28,9 +28,10 @@ interface PatientCardProps {
   patient: Patient
   onTransferRequest: (patient: Patient) => void
   transferRequests?: TransferRequest[]
+  currentRole?: 'nurse' | 'doctor' | 'admin'
 }
 
-export function PatientCard({ patient, onTransferRequest, transferRequests = [] }: PatientCardProps) {
+export function PatientCard({ patient, onTransferRequest, transferRequests = [], currentRole }: PatientCardProps) {
   const [readySince, setReadySince] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
   // Check if this patient has a pending, approved, or rejected transfer request
@@ -319,6 +320,9 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
               <Clock className="h-4 w-4" />
               <span className="font-medium">{readySinceText}</span>
             </div>
+            <div className="text-xs text-green-700 mt-1">
+              Patient has been stable. Consider initiating a transfer.
+            </div>
           </div>
         )}
 
@@ -411,7 +415,7 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
             {buttonState.icon}
             {buttonState.text}
           </Button>
-          {adminApprovedRequest && (
+          {adminApprovedRequest && currentRole === 'nurse' && (
             <Button
               onClick={async () => {
                 try {
