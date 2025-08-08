@@ -15,6 +15,8 @@ from sklearn.base import BaseEstimator
 from database import db
 from robust_predictor import RobustICUPredictor
 from typing import List
+import csv
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -191,35 +193,109 @@ def _passes_clinical_rules(p: dict) -> bool:
     except Exception:
         return False
 
-async def simulate_vitals_loop():
-    """Background task to simulate vitals every 5–10 seconds across all active patients, refresh predictions, and maintain ready_since."""
+# async def simulate_vitals_loop():
+#     """Background task to simulate vitals every 5–10 seconds across all active patients, refresh predictions, and maintain ready_since."""
+#     await asyncio.sleep(2)
+#     while True:
+#         try:
+#             await asyncio.sleep(random.randint(1, 2))
+#             patients = db.get_all_patients()
+#             if not patients:
+#                 continue
+#             for patient in patients:
+#                 # Random small perturbations
+#                 new_vitals = {
+#                     "heartRate": max(40, min(140, patient['vitals']['heartRate'] + random.uniform(-3, 3))),
+#                     "spO2": max(85, min(100, patient['vitals']['spO2'] + random.uniform(-0.8, 0.8))),
+#                     "respiratoryRate": max(8, min(30, patient['vitals']['respiratoryRate'] + random.uniform(-1.5, 1.5))),
+#                     "systolicBP": max(80, min(200, patient['vitals']['systolicBP'] + random.uniform(-4, 4))),
+#                     "lactate": max(0.5, min(6.0, patient['vitals']['lactate'] + random.uniform(-0.15, 0.15))),
+#                     "gcs": max(3, min(15, patient['vitals']['gcs'] + random.uniform(-0.2, 0.2))),
+#                 }
+
+#                 db.update_patient_vitals(
+#                     patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
+#                     vitals=new_vitals,
+#                     on_ventilator=patient['onVentilator'],
+#                     on_pressors=patient['onPressors'],
+#                     comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+#                 )
+
+#                 # Recompute prediction and cache
+#                 try:
+#                     pdata = PatientData(
+#                         HR=new_vitals['heartRate'],
+#                         SpO2=new_vitals['spO2'],
+#                         RESP=new_vitals['respiratoryRate'],
+#                         ABPsys=new_vitals['systolicBP'],
+#                         lactate=new_vitals['lactate'],
+#                         gcs=new_vitals['gcs'],
+#                         age=patient['age'],
+#                         comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+#                         on_vent=patient['onVentilator'],
+#                         on_pressors=patient['onPressors'],
+#                     )
+#                     pred = await predict_transfer_readiness(pdata)
+#                     db.cache_prediction(patient['id'], pred.dict())
+
+#                     # Gate blinking state by clinical rules and no transfer request
+#                     ready_by_ml = (pred.prediction == "Ready")
+#                     if ready_by_ml and _passes_clinical_rules({**patient, 'vitals': new_vitals}):
+#                         # Ensure no active transfer request exists for this patient
+#                         try:
+#                             requests = db.get_transfer_requests()
+#                             has_any = any(r.get('patient_id') == patient['id'] and r.get('status') in ['pending','doctor_approved','admin_approved','completed'] for r in requests)
+#                         except Exception:
+#                             has_any = False
+#                         if not has_any:
+#                             db.set_ready_state(patient['id'], True, pred.timestamp)
+#                         else:
+#                             db.set_ready_state(patient['id'], False)
+#                     else:
+#                         db.set_ready_state(patient['id'], False)
+#                 except Exception as e:
+#                     logger.warning(f"Prediction refresh failed: {e}")
+
+#                 await broadcast_vitals_and_prediction_update(patient['id'])
+#         except Exception as e:
+#             logger.error(f"Vitals simulation loop error: {e}")
+
+
+async def simulate_static_vitals_from_csv(csv_path: str):
+    """Loop over a single-row CSV and simulate vitals for one DB patient every second."""
     await asyncio.sleep(2)
-    while True:
-        try:
-            await asyncio.sleep(random.randint(1, 2))
-            patients = db.get_all_patients()
-            if not patients:
-                continue
-            for patient in patients:
-                # Random small perturbations
+    try:
+        patients = db.get_all_patients()
+        if not patients:
+            logger.error("No patients found in the DB.")
+            return
+
+        patient = patients[0]  # Or choose another index if needed
+        patient_id = patient['id']
+        patient_db_id = db.get_patient_internal_id(patient_id)
+
+        with open(csv_path, newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            row = next(reader)  # Just the first row
+
+            while True:
                 new_vitals = {
-                    "heartRate": max(40, min(140, patient['vitals']['heartRate'] + random.uniform(-3, 3))),
-                    "spO2": max(85, min(100, patient['vitals']['spO2'] + random.uniform(-0.8, 0.8))),
-                    "respiratoryRate": max(8, min(30, patient['vitals']['respiratoryRate'] + random.uniform(-1.5, 1.5))),
-                    "systolicBP": max(80, min(200, patient['vitals']['systolicBP'] + random.uniform(-4, 4))),
-                    "lactate": max(0.5, min(6.0, patient['vitals']['lactate'] + random.uniform(-0.15, 0.15))),
-                    "gcs": max(3, min(15, patient['vitals']['gcs'] + random.uniform(-0.2, 0.2))),
+                    "heartRate": float(row['HR']),
+                    "spO2": float(row['SpO2']),
+                    "respiratoryRate": float(row['RESP']),
+                    "systolicBP": float(row['ABPsys']),
+                    "lactate": float(row['lactate']),
+                    "gcs": float(row['gcs']),
                 }
 
                 db.update_patient_vitals(
-                    patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
+                    patient_db_id=patient_db_id,
                     vitals=new_vitals,
-                    on_ventilator=patient['onVentilator'],
-                    on_pressors=patient['onPressors'],
-                    comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+                    on_ventilator=row['on_vent'].lower() == "true",
+                    on_pressors=row['on_pressors'].lower() == "true",
+                    comorbidity_score=int(row['comorbidity_score']),
                 )
 
-                # Recompute prediction and cache
                 try:
                     pdata = PatientData(
                         HR=new_vitals['heartRate'],
@@ -228,35 +304,34 @@ async def simulate_vitals_loop():
                         ABPsys=new_vitals['systolicBP'],
                         lactate=new_vitals['lactate'],
                         gcs=new_vitals['gcs'],
-                        age=patient['age'],
-                        comorbidity_score=patient.get('comorbidityScore', 0) or 0,
-                        on_vent=patient['onVentilator'],
-                        on_pressors=patient['onPressors'],
+                        age=int(row['age']),
+                        comorbidity_score=int(row['comorbidity_score']),
+                        on_vent=row['on_vent'].lower() == "true",
+                        on_pressors=row['on_pressors'].lower() == "true",
                     )
-                    pred = await predict_transfer_readiness(pdata)
-                    db.cache_prediction(patient['id'], pred.dict())
 
-                    # Gate blinking state by clinical rules and no transfer request
-                    ready_by_ml = (pred.prediction == "Ready")
+                    pred = await predict_transfer_readiness(pdata)
+                    db.cache_prediction(patient_id, pred.dict())
+
+                    ready_by_ml = pred.prediction == "Ready"
                     if ready_by_ml and _passes_clinical_rules({**patient, 'vitals': new_vitals}):
-                        # Ensure no active transfer request exists for this patient
-                        try:
-                            requests = db.get_transfer_requests()
-                            has_any = any(r.get('patient_id') == patient['id'] and r.get('status') in ['pending','doctor_approved','admin_approved','completed'] for r in requests)
-                        except Exception:
-                            has_any = False
-                        if not has_any:
-                            db.set_ready_state(patient['id'], True, pred.timestamp)
-                        else:
-                            db.set_ready_state(patient['id'], False)
+                        requests = db.get_transfer_requests()
+                        has_any = any(
+                            r.get('patient_id') == patient_id and r.get('status') in ['pending', 'doctor_approved', 'admin_approved', 'completed']
+                        )
+                        db.set_ready_state(patient_id, not has_any, pred.timestamp if not has_any else None)
                     else:
-                        db.set_ready_state(patient['id'], False)
+                        db.set_ready_state(patient_id, False)
+
                 except Exception as e:
                     logger.warning(f"Prediction refresh failed: {e}")
 
-                await broadcast_vitals_and_prediction_update(patient['id'])
-        except Exception as e:
-            logger.error(f"Vitals simulation loop error: {e}")
+                await broadcast_vitals_and_prediction_update(patient_id)
+                await asyncio.sleep(1)
+
+    except Exception as e:
+        logger.error(f"Vitals simulation from CSV failed: {e}")
+
 
 try:
     import sys
@@ -869,5 +944,5 @@ if __name__ == "__main__":
     import uvicorn
     # Start vitals simulation in background
     loop = asyncio.get_event_loop()
-    loop.create_task(simulate_vitals_loop())
+    loop.create_task(simulate_vitals_loop("realistic_icu_data.csv"))
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -54,6 +54,7 @@ export default function Dashboard() {
         MLPredictionService.addListener('vitals_update', handleVitalsUpdate)
         MLPredictionService.addListener('transfer_request_created', handleTransferRequestCreated)
         MLPredictionService.addListener('transfer_request_updated', handleTransferRequestUpdated)
+        MLPredictionService.addListener('patient_discharged', handlePatientDischarged)
         
         // Fetch initial data
         await fetchPatients()
@@ -75,6 +76,7 @@ export default function Dashboard() {
       MLPredictionService.removeListener('vitals_update', handleVitalsUpdate)
       MLPredictionService.removeListener('transfer_request_created', handleTransferRequestCreated)
       MLPredictionService.removeListener('transfer_request_updated', handleTransferRequestUpdated)
+      MLPredictionService.removeListener('patient_discharged', handlePatientDischarged)
     }
   }, [])
 
@@ -130,6 +132,19 @@ export default function Dashboard() {
       title: 'New Transfer Request',
       message: `Transfer request created for patient ${data.patient_id}`,
       timestamp: new Date()
+    }, ...prev])
+  }
+
+  const handlePatientDischarged = (data: any) => {
+    // Refetch active patients and requests so the dashboard updates immediately
+    fetchPatients()
+    fetchTransferRequests()
+    setNotifications(prev => [{
+      id: Date.now(),
+      type: 'patient_discharged',
+      title: 'Patient Discharged',
+      message: `Patient transfer completed (request ${data?.request_id || ''})`,
+      timestamp: new Date(),
     }, ...prev])
   }
 

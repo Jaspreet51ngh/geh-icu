@@ -99,10 +99,10 @@ export class MLPredictionService {
           console.log('WebSocket message received:', data)
           this.notifyListeners(data.type, data.data)
           
-          if (data.type === 'vitals_update' || data.type === 'patient_updated') {
+          if (data.type === 'vitals_update' || data.type === 'patient_updated' || data.type === 'patient_discharged') {
             this.triggerPatientDataRefresh()
           }
-          if (data.type === 'transfer_request_created' || data.type === 'transfer_request_updated') {
+          if (data.type === 'transfer_request_created' || data.type === 'transfer_request_updated' || data.type === 'patient_discharged') {
             this.triggerTransferRequestRefresh()
           }
         } catch (error) {
@@ -442,6 +442,21 @@ export class MLPredictionService {
       body: JSON.stringify(body),
     })
     if (!res.ok) throw new Error('Failed to add patient')
+    return await res.json()
+  }
+
+  static async getDischargedPatients(): Promise<{
+    patient_id: string
+    name: string
+    time_discharged: string
+    target_department: string
+    approved_by_nurse?: string | null
+    approved_by_doctor?: string | null
+    approved_by_admin?: string | null
+    transfer_request_id: number
+  }[]> {
+    const res = await fetch(`${this.API_BASE_URL}/discharged-patients`)
+    if (!res.ok) throw new Error('Failed to fetch discharged patients')
     return await res.json()
   }
 

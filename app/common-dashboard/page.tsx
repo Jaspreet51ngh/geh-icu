@@ -1,98 +1,124 @@
 "use client"
 // @ts-nocheck
 
-import React, { useEffect, useState, useMemo } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Filter, Download, Users } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { FileText, Search, Download, Users } from "lucide-react"
+import { MLPredictionService } from "@/lib/ml-service"
 
-export default function CommonDashboard() {
-  const [rows, setRows] = useState<any[]>([])
-  const [search, setSearch] = useState('')
-  const [dept, setDept] = useState('all')
+interface DischargedRow {
+  patient_id: string
+  name: string
+  time_discharged: string
+  target_department: string
+  approved_by_nurse?: string | null
+  approved_by_doctor?: string | null
+  approved_by_admin?: string | null
+  transfer_request_id: number
+}
+
+export default function CommonDashboardPage() {
+  const [rows, setRows] = useState<DischargedRow[]>([])
+  const [searchTerm, setSearchTerm] = useState("")
+
+  const load = async () => {
+    try {
+      const data = await MLPredictionService.getDischargedPatients()
+      setRows(data)
+    } catch (e) {
+      console.error(e)
+    }
+  }
 
   useEffect(() => {
-    fetch('http://localhost:8000/discharged-patients').then(async (r) => {
-      const data = await r.json()
-      setRows(data)
-    }).catch(console.error)
+    MLPredictionService.connectWebSocket()
+    load()
+    // refresh on WS discharge notifications
+    const onDischarged = () => load()
+    MLPredictionService.addListener('patient_discharged', onDischarged)
+    return () => {
+      MLPredictionService.removeListener('patient_discharged', onDischarged)
+    }
   }, [])
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
-      const s = search.toLowerCase()
-      const matches = (r.name || '').toLowerCase().includes(s) || (r.patient_id || '').toLowerCase().includes(s)
-      const matchesDept = dept === 'all' || r.target_department === dept
-      return matches && matchesDept
+      const q = searchTerm.toLowerCase()
+      return (
+        (r.name || '').toLowerCase().includes(q) ||
+        (r.patient_id || '').toLowerCase().includes(q) ||
+        (r.target_department || '').toLowerCase().includes(q)
+      )
     })
-  }, [rows, search, dept])
+  }, [rows, searchTerm])
 
-  const exportCSV = () => {
-    const csv = filtered.map((t) => `${t.patient_id},${t.name},${t.time_discharged},${t.target_department},${t.approved_by_nurse || ''},${t.approved_by_doctor || ''},${t.approved_by_admin || ''}`).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
+  const handleExport = () => {
+    const csvContent = filtered
+      .map((t) => `${t.patient_id},${t.name},${t.time_discharged},${t.target_department},${t.approved_by_nurse || ''},${t.approved_by_doctor || ''},${t.approved_by_admin || ''}`)
+      .join("\n")
+    const blob = new Blob([csvContent], { type: "text/csv" })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement("a")
     a.href = url
-    a.download = 'common-dashboard.csv'
+    a.download = "discharged-patients.csv"
     a.click()
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4">
-      <div className="flex items-center gap-2 mb-4">
-        <Users className="h-6 w-6 text-teal-600" />
-        <h1 className="text-xl font-bold text-slate-800">Common Discharge Dashboard</h1>
-      </div>
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-slate-800"><Filter className="h-4 w-4"/> Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-3 items-center">
-            <Input placeholder="Search by name or ID" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-xs"/>
-            <Input placeholder="Filter by department (exact)" value={dept === 'all' ? '' : dept} onChange={(e) => setDept(e.target.value || 'all')} className="max-w-xs"/>
-            <Button onClick={exportCSV} variant="outline" className="flex items-center gap-2"><Download className="h-4 w-4"/>Export CSV</Button>
-          </div>
-        </CardContent>
-      </Card>
+    <div className="min-h-screen bg-slate-50">
+      <header className="bg-white border-b p-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <Users className="h-6 w-6 text-teal-600" />
+          <h1 className="text-xl font-semibold">Common Dashboard — Discharged Patients</h1>
+        </div>
+      </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-slate-800">Patients Moved Out of ICU</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Patient ID</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Move Time</TableHead>
-                <TableHead>Moved Department</TableHead>
-                <TableHead>Approved by Nurse</TableHead>
-                <TableHead>Approved by Doctor</TableHead>
-                <TableHead>Approved by Admin</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((t) => (
-                <TableRow key={`${t.transfer_request_id}-${t.patient_id}`}>
-                  <TableCell>{t.patient_id}</TableCell>
-                  <TableCell>{t.name}</TableCell>
-                  <TableCell>{new Date(t.time_discharged).toLocaleString()}</TableCell>
-                  <TableCell>{t.target_department}</TableCell>
-                  <TableCell>{t.approved_by_nurse || '—'}</TableCell>
-                  <TableCell>{t.approved_by_doctor || '—'}</TableCell>
-                  <TableCell>{t.approved_by_admin || '—'}</TableCell>
+      <div className="p-4 space-y-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Discharged Patients</CardTitle>
+            <div className="flex gap-2 items-center">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 h-4 w-4" />
+                <Input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search" className="pl-9" />
+              </div>
+              <Button variant="outline" onClick={handleExport}><Download className="h-4 w-4 mr-2"/>Export CSV</Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ICU ID</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Moved Time</TableHead>
+                  <TableHead>Moved Department</TableHead>
+                  <TableHead>Approved By (Nurse)</TableHead>
+                  <TableHead>Approved By (Doctor)</TableHead>
+                  <TableHead>Approved By (Admin)</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((t) => (
+                  <TableRow key={`${t.transfer_request_id}-${t.patient_id}`}>
+                    <TableCell>{t.patient_id}</TableCell>
+                    <TableCell>{t.name}</TableCell>
+                    <TableCell>{new Date(t.time_discharged).toLocaleString()}</TableCell>
+                    <TableCell>{t.target_department}</TableCell>
+                    <TableCell>{t.approved_by_nurse || '—'}</TableCell>
+                    <TableCell>{t.approved_by_doctor || '—'}</TableCell>
+                    <TableCell>{t.approved_by_admin || '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }
-
 
