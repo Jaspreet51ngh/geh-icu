@@ -40,6 +40,7 @@ export function TransferRequestModal({ patient, isOpen, onClose, userRole, onReq
   const [comments, setComments] = useState(pendingRequest?.notes || "")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showConfirmation, setShowConfirmation] = useState(false)
+  const isAdminContext = userRole === "Admin"
 
   if (!patient) return null
 
@@ -142,6 +143,35 @@ export function TransferRequestModal({ patient, isOpen, onClose, userRole, onReq
         description: `Failed to approve transfer: ${err.message}`,
         variant: "destructive",
       })
+    }
+  }
+
+  const handleAdminApproval = async () => {
+    if (!targetDepartment) {
+      toast({
+        title: "❗ Missing Department",
+        description: "Please select a target department before approving.",
+        variant: "warning",
+      })
+      return
+    }
+    setIsSubmitting(true)
+    try {
+      const requestId = pendingRequest?.id
+      if (!requestId) throw new Error("No request to admin-approve.")
+      await MLPredictionService.adminApproveTransferRequest(
+        requestId,
+        localStorage.getItem("username") || "admin",
+        targetDepartment,
+        comments.trim()
+      )
+      setIsSubmitting(false)
+      onClose()
+      if (onRequestCreated) onRequestCreated()
+      toast({ title: "✅ Admin Approved", description: `Bed assigned in ${targetDepartment}.` })
+    } catch (err: any) {
+      setIsSubmitting(false)
+      toast({ title: "❌ Error", description: `Failed to admin approve: ${err.message}`, variant: "destructive" })
     }
   }
 
@@ -306,7 +336,7 @@ export function TransferRequestModal({ patient, isOpen, onClose, userRole, onReq
               </div>
             </div>
 
-            {userRole === "Doctor" && (
+            {(userRole === "Doctor" || isAdminContext) && (
               <div className="space-y-3">
                 <Label className="text-base font-semibold text-blue-600">Transfer To Department:</Label>
                 <Select value={targetDepartment} onValueChange={setTargetDepartment}>
@@ -353,7 +383,7 @@ export function TransferRequestModal({ patient, isOpen, onClose, userRole, onReq
                   <Send className="h-5 w-5 mr-2" />
                   Send to Doctor for Review
                 </Button>
-              ) : (
+              ) : userRole === "Doctor" ? (
                 <>
                   <Button
                     onClick={handleDoctorRejection}
@@ -386,6 +416,26 @@ export function TransferRequestModal({ patient, isOpen, onClose, userRole, onReq
                       <>
                         <CheckCircle2 className="h-5 w-5 mr-2" />
                         Approve Transfer
+                      </>
+                    )}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    onClick={handleAdminApproval}
+                    disabled={!targetDepartment || isSubmitting}
+                    className="flex-1 h-12 text-base bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    {isSubmitting ? (
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                        Approving...
+                      </div>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-5 w-5 mr-2" />
+                        Approve & Assign Bed
                       </>
                     )}
                   </Button>

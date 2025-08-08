@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { useEffect, useMemo, useState } from "react"
 import {
   Heart,
   Thermometer,
@@ -21,7 +22,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { VitalsChart } from "./vitals-chart"
-import { type Patient, type TransferRequest } from "@/lib/ml-service"
+import { type Patient, type TransferRequest, getMLPrediction, MLPredictionService } from "@/lib/ml-service"
 
 interface PatientCardProps {
   patient: Patient
@@ -30,12 +31,17 @@ interface PatientCardProps {
 }
 
 export function PatientCard({ patient, onTransferRequest, transferRequests = [] }: PatientCardProps) {
+  const [readySince, setReadySince] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
   // Check if this patient has a pending, approved, or rejected transfer request
   const pendingRequest = transferRequests.find(
     (req) => req.patient_id === patient.id && req.status === "pending"
   )
-  const approvedRequest = transferRequests.find(
+  const doctorApprovedRequest = transferRequests.find(
     (req) => req.patient_id === patient.id && req.status === "doctor_approved"
+  )
+  const adminApprovedRequest = transferRequests.find(
+    (req) => req.patient_id === patient.id && req.status === "admin_approved"
   )
   const rejectedRequest = transferRequests.find(
     (req) => req.patient_id === patient.id && req.status === "rejected"
@@ -110,7 +116,7 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
 
   const cardClasses = `professional-card transition-all duration-500 hover:shadow-2xl ${
     patient.prediction?.transferReady 
-      ? "border-green-200 hover:border-green-300" 
+      ? "border-green-300 hover:border-green-400 animate-pulse"
       : patient.prediction?.confidence && patient.prediction.confidence < 0.3
       ? "border-red-200 hover:border-red-300"
       : "border-amber-200 hover:border-amber-300"
@@ -119,6 +125,35 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
   const lastUpdated = patient.lastUpdated 
     ? new Date(patient.lastUpdated).toLocaleTimeString()
     : "Unknown"
+
+  // Ready Since timer logic
+  useEffect(() => {
+    let mounted = true
+    const run = async () => {
+      if (patient.prediction?.transferReady) {
+        const res = await getMLPrediction(patient.id)
+        if (mounted) setReadySince(res?.prediction === 'ready' ? res?.timestamp || null : null)
+      } else {
+        setReadySince(null)
+      }
+    }
+    run()
+    const iv = setInterval(() => setTick((t) => t + 1), 60_000)
+    return () => { mounted = false; clearInterval(iv) }
+  }, [patient.id, patient.prediction?.transferReady])
+
+  const readySinceText = useMemo(() => {
+    if (!readySince) return null
+    const since = new Date(readySince)
+    const now = new Date()
+    const diffMs = now.getTime() - since.getTime()
+    const mins = Math.floor(diffMs / 60000)
+    const hrs = Math.floor(mins / 60)
+    const remMin = mins % 60
+    const hhmm = since.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const ago = hrs > 0 ? `${hrs}hr ${remMin}min` : `${remMin}min`
+    return `Patient ${patient.name} has been ready for transfer since ${hhmm} – ${ago} ago.`
+  }, [readySince, tick, patient.name])
 
   // Determine button state and text
   const getButtonState = () => {
@@ -130,7 +165,7 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
         className: "bg-orange-500 hover:bg-orange-600 text-white disabled:bg-orange-400 disabled:cursor-not-allowed"
       }
     }
-    if (approvedRequest) {
+    if (doctorApprovedRequest) {
       return {
         disabled: true,
         text: "Transfer Approved by Doctor",
@@ -194,23 +229,24 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
 
       <CardContent className="space-y-4">
         {/* Transfer Request Status */}
-        {(pendingRequest || approvedRequest || rejectedRequest) && (
+        {(pendingRequest || doctorApprovedRequest || adminApprovedRequest || rejectedRequest) && (
           <div className={`p-3 rounded-lg border ${
             pendingRequest ? "bg-orange-50 border-orange-200" :
-            approvedRequest ? "bg-green-50 border-green-200" :
+            (doctorApprovedRequest || adminApprovedRequest) ? "bg-green-50 border-green-200" :
             "bg-red-50 border-red-200"
           }`}>
             <div className="flex items-center space-x-2">
               {pendingRequest && <Hourglass className="h-4 w-4 text-orange-600" />}
-              {approvedRequest && <CheckCircle className="h-4 w-4 text-green-600" />}
+              {(doctorApprovedRequest || adminApprovedRequest) && <CheckCircle className="h-4 w-4 text-green-600" />}
               {rejectedRequest && <XCircle className="h-4 w-4 text-red-600" />}
               <span className={`text-sm font-medium ${
                 pendingRequest ? "text-orange-800" :
-                approvedRequest ? "text-green-800" :
+                (doctorApprovedRequest || adminApprovedRequest) ? "text-green-800" :
                 "text-red-800"
               }`}>
                 {pendingRequest && "Transfer Request Pending"}
-                {approvedRequest && "Transfer Approved by Doctor"}
+                {doctorApprovedRequest && "Transfer Approved by Doctor"}
+                {adminApprovedRequest && "Waiting for Nurse to Shift — Admin Approved"}
                 {rejectedRequest && "Transfer Request Rejected"}
               </span>
             </div>
@@ -219,9 +255,14 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
                 Requested by {pendingRequest.nurse_id} • {new Date(pendingRequest.created_at).toLocaleString()}
               </p>
             )}
-            {approvedRequest && (
+            {doctorApprovedRequest && (
               <p className="text-xs text-green-700 mt-1">
-                Approved by {approvedRequest.doctor_id} • {new Date(approvedRequest.updated_at).toLocaleString()}
+                Approved by {doctorApprovedRequest.doctor_id} • {new Date(doctorApprovedRequest.updated_at).toLocaleString()}
+              </p>
+            )}
+            {adminApprovedRequest && (
+              <p className="text-xs text-green-700 mt-1">
+                Admin approved • {new Date(adminApprovedRequest.updated_at).toLocaleString()}
               </p>
             )}
             {rejectedRequest && (
@@ -267,6 +308,15 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {patient.prediction?.transferReady && readySinceText && (
+          <div className="p-3 rounded-lg border border-green-300 bg-green-50 animate-pulse">
+            <div className="flex items-center gap-2 text-green-800 text-sm">
+              <Clock className="h-4 w-4" />
+              <span className="font-medium">{readySinceText}</span>
             </div>
           </div>
         )}
@@ -360,6 +410,21 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [] 
             {buttonState.icon}
             {buttonState.text}
           </Button>
+          {adminApprovedRequest && (
+            <Button
+              onClick={async () => {
+                try {
+                  const nurse = typeof window !== 'undefined' ? (localStorage.getItem('username') || 'nurse_sarah') : 'nurse_sarah'
+                  await MLPredictionService.dischargePatient(adminApprovedRequest.id!, nurse)
+                } catch (e) {
+                  console.error(e)
+                }
+              }}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              Shift Patient?
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

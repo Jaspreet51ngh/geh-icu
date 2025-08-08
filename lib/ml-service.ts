@@ -43,13 +43,22 @@ export interface Patient {
   lastUpdated?: string
 }
 
+// Rich prediction used by frontend Patient.prediction shape
+export interface RichPrediction {
+  transferReady: boolean
+  confidence: number
+  reasoning: string
+  riskFactors: string[]
+  timestamp?: string
+}
+
 export interface TransferRequest {
   id?: string
   patient_id: string
   nurse_id: string
   doctor_id?: string | null
   department_admin_id?: string | null
-  status: "pending" | "doctor_approved" | "admin_approved" | "rejected"
+  status: "pending" | "doctor_approved" | "admin_approved" | "doctor_rejected" | "admin_rejected" | "rejected" | "completed"
   target_department?: string | null
   notes?: string | null
   created_at: string
@@ -167,7 +176,7 @@ export class MLPredictionService {
     }
   }
 
-  static async callMLAPI(patient: Patient): Promise<MLPrediction> {
+  static async callMLAPI(patient: Patient): Promise<RichPrediction> {
     try {
       const payload = {
         HR: patient.vitals.heartRate,
@@ -373,7 +382,49 @@ export class MLPredictionService {
     }
   }
 
-  private static fallbackPrediction(patient: Patient): MLPrediction {
+  static async adminApproveTransferRequest(
+    requestId: string,
+    adminId: string,
+    targetDepartment: string,
+    notes?: string
+  ): Promise<TransferRequest> {
+    try {
+      const response = await fetch(`${this.API_BASE_URL}/transfer-request/${requestId}/admin-approve`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admin_id: adminId, target_department: targetDepartment, notes: notes || "Transfer approved by admin" })
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`API Error: ${response.status} - ${errorText}`)
+      }
+      const result = await response.json()
+      return result.data
+    } catch (error) {
+      console.error("Failed to admin-approve transfer request:", error)
+      throw error
+    }
+  }
+
+  static async dischargePatient(requestId: string, nurseId: string, notes?: string): Promise<{ success: boolean }> {
+    try {
+      const response = await fetch(`${this.API_BASE_URL}/transfer-request/${requestId}/discharge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nurse_id: nurseId, notes: notes || "" })
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`API Error: ${response.status} - ${errorText}`)
+      }
+      return await response.json()
+    } catch (error) {
+      console.error("Failed to discharge patient:", error)
+      throw error
+    }
+  }
+
+  private static fallbackPrediction(patient: Patient): RichPrediction {
     try {
       const sofaScore = this.calculateSOFAScore(patient)
       const vitalStability = this.assessVitalStability(patient.vitals)
@@ -474,60 +525,7 @@ export class MLPredictionService {
     }, 0)
   }
 
-  private static fallbackPrediction(patient: Patient): MLPrediction {
-    try {
-      const sofaScore = this.calculateSOFAScore(patient)
-      const vitalStability = this.assessVitalStability(patient.vitals)
-      const riskFactors = this.identifyRiskFactors(patient)
-
-      let transferReady = true
-      let confidence = 0.8
-      let reasoning = ""
-
-      if (patient.onVentilator || patient.onPressors) {
-        transferReady = false
-        confidence = 0.95
-        reasoning = "Patient requires intensive care support (ventilator/pressors)"
-      } else if (sofaScore >= 6) {
-        transferReady = false
-        confidence = 0.9
-        reasoning = "High SOFA score indicates multi-organ dysfunction"
-      } else if (patient.vitals.lactate > 4.0) {
-        transferReady = false
-        confidence = 0.88
-        reasoning = "Elevated lactate suggests ongoing tissue hypoperfusion"
-      } else if (patient.vitals.gcs < 13) {
-        transferReady = false
-        confidence = 0.85
-        reasoning = "Altered mental status requires continued ICU monitoring"
-      } else if (vitalStability < 0.7) {
-        transferReady = false
-        confidence = 0.8
-        reasoning = "Unstable vital signs require continued intensive monitoring"
-      } else {
-        transferReady = true
-        confidence = Math.min(0.95, 0.7 + vitalStability * 0.25)
-        reasoning = "Stable vitals, improving clinical parameters, suitable for step-down care"
-      }
-
-      return {
-        transferReady,
-        confidence,
-        reasoning,
-        riskFactors,
-        timestamp: new Date().toISOString()
-      }
-    } catch (error) {
-      console.error("ML Prediction Error:", error)
-      return {
-        transferReady: false,
-        confidence: 0.5,
-        reasoning: "Unable to assess - requires clinical evaluation",
-        riskFactors: ["Assessment unavailable"],
-        timestamp: new Date().toISOString()
-      }
-    }
-  }
+  
 
   private static assessVitalStability(vitals: PatientVitals): number {
     let stability = 1.0
@@ -600,5 +598,22 @@ export class MLPredictionService {
     }
     this.listeners.clear()
     console.log('MLPredictionService cleaned up')
+  }
+}
+
+// Minimal endpoint types and helper used by the nurse card for "ready since" status
+export interface ReadySincePrediction {
+  prediction: 'ready' | 'not_ready'
+  timestamp: string
+}
+
+export async function getMLPrediction(patientId: string): Promise<ReadySincePrediction | null> {
+  try {
+    const res = await fetch(`/api/predict/${patientId}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    return { prediction: data.prediction, timestamp: data.timestamp }
+  } catch {
+    return null
   }
 }

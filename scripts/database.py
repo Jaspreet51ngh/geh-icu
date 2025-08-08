@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import logging
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,26 @@ class ICUDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (transfer_request_id) REFERENCES transfer_requests (id),
                     FOREIGN KEY (approver_id) REFERENCES users (id)
+                )
+            """)
+
+            # Create discharged_patients table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS discharged_patients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    patient_id INTEGER NOT NULL,
+                    patient_external_id TEXT NOT NULL,
+                    patient_name TEXT NOT NULL,
+                    time_discharged TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    target_department_id INTEGER,
+                    target_department_name TEXT,
+                    requesting_nurse_username TEXT,
+                    doctor_username TEXT,
+                    admin_username TEXT,
+                    transfer_request_id INTEGER,
+                    notes TEXT,
+                    FOREIGN KEY (patient_id) REFERENCES patients (id),
+                    FOREIGN KEY (target_department_id) REFERENCES departments (id)
                 )
             """)
             
@@ -433,7 +454,6 @@ class ICUDatabase:
                 nurse_db_id = nurse_result['id']
             
             # Generate unique request ID
-            #request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}"
             request_id = f"TR-{datetime.now().strftime('%Y%m%d')}-{patient_db_id:03d}-{uuid4().hex[:6]}"
             
             cursor.execute("""
@@ -494,7 +514,7 @@ class ICUDatabase:
             return requests
     
     def update_transfer_request(self, request_id: str, update_data: Dict[str, Any]) -> bool:
-        """Update transfer request status"""
+        """Update transfer request status with proper role handling and department mapping"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -505,8 +525,22 @@ class ICUDatabase:
             if not current_request:
                 return False
             
-            # Update status
-            new_status = update_data.get('status', current_request['current_status'])
+            # Normalize and validate status based on actor
+            requested_status = update_data.get('status', current_request['current_status'])
+            new_status = requested_status
+
+            # Map simple department name to id if provided
+            target_department_id = current_request['target_department_id']
+            if 'target_department_id' in update_data and update_data['target_department_id']:
+                target_department_id = update_data['target_department_id']
+            elif 'target_department' in update_data and update_data['target_department']:
+                cursor.execute("SELECT id FROM departments WHERE name = ?", (update_data['target_department'],))
+                dept_row = cursor.fetchone()
+                if dept_row:
+                    target_department_id = dept_row['id']
+
+            # Determine actor and normalize status for DB CHECK constraint
+            approver_db_id = None
             
             # Handle doctor ID mapping
             reviewing_doctor_id = None
@@ -547,20 +581,177 @@ class ICUDatabase:
                 request_id
             ))
             
-            # Add approval record
-            if 'approver_id' in update_data:
-                cursor.execute("""
-                    INSERT INTO transfer_approvals (transfer_request_id, approver_id, action, comments)
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    current_request['id'],
-                    update_data['approver_id'],
-                    'approved' if new_status in ['doctor_approved', 'admin_approved'] else 'rejected',
-                    update_data.get('comments', '')
-                ))
+            # Handle doctor actions
+            if 'doctor_id' in update_data and update_data['doctor_id']:
+                doctor_id = update_data['doctor_id']
+                if doctor_id.startswith('doctor'):
+                    doctor_mapping = {
+                        'doctor1': 'dr_smith',
+                        'doctor2': 'dr_jones'
+                    }
+                    doctor_username = doctor_mapping.get(doctor_id, 'dr_smith')
+                else:
+                    doctor_username = doctor_id
+
+                cursor.execute("SELECT id FROM users WHERE username = ?", (doctor_username,))
+                doctor_result = cursor.fetchone()
+                if doctor_result:
+                    reviewing_doctor_id = doctor_result['id']
+                else:
+                    cursor.execute("""
+                        INSERT INTO users (username, role, department_id, password_hash)
+                        VALUES (?, 'doctor', 1, 'password123')
+                    """, (doctor_username,))
+                    reviewing_doctor_id = cursor.lastrowid
+
+                # Normalize status for doctor
+                if requested_status in ['approved', 'doctor_approved']:
+                    new_status = 'doctor_approved'
+                elif requested_status in ['rejected', 'doctor_rejected']:
+                    new_status = 'doctor_rejected'
+                approver_db_id = reviewing_doctor_id
+            else:
+                reviewing_doctor_id = current_request['reviewing_doctor_id']
+
+            # Handle admin actions
+            if 'admin_id' in update_data and update_data['admin_id']:
+                admin_id = update_data['admin_id']
+                if isinstance(admin_id, str) and admin_id.startswith('admin'):
+                    admin_username = admin_id
+                else:
+                    admin_username = admin_id
+                cursor.execute("SELECT id, role FROM users WHERE username = ?", (admin_username,))
+                admin_result = cursor.fetchone()
+                if not admin_result:
+                    cursor.execute("""
+                        INSERT INTO users (username, role, department_id, password_hash)
+                        VALUES (?, 'admin', 1, 'password123')
+                    """, (admin_username,))
+                    admin_db_id = cursor.lastrowid
+                else:
+                    admin_db_id = admin_result['id']
+
+                # Normalize status for admin
+                if requested_status in ['approved', 'admin_approved']:
+                    new_status = 'admin_approved'
+                elif requested_status in ['rejected', 'admin_rejected']:
+                    new_status = 'admin_rejected'
+                approver_db_id = admin_db_id
+
+            # Fallback normalization to allowed values
+            allowed_statuses = ['pending', 'doctor_approved', 'doctor_rejected', 'admin_approved', 'admin_rejected', 'completed']
+            if new_status not in allowed_statuses:
+                new_status = current_request['current_status']
+
+            # Apply update
+            cursor.execute("""
+                UPDATE transfer_requests SET
+                current_status = ?, target_department_id = ?, reviewing_doctor_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE request_id = ?
+            """, (
+                new_status,
+                target_department_id,
+                reviewing_doctor_id,
+                update_data.get('notes', current_request['notes']),
+                request_id
+            ))
+
+            # Add approval record if applicable
+            if approver_db_id is not None and requested_status in ['approved', 'doctor_approved', 'admin_approved', 'rejected', 'doctor_rejected', 'admin_rejected']:
+                cursor.execute("SELECT id FROM transfer_requests WHERE request_id = ?", (request_id,))
+                tr_row = cursor.fetchone()
+                if tr_row:
+                    cursor.execute("""
+                        INSERT INTO transfer_approvals (transfer_request_id, approver_id, action, comments)
+                        VALUES (?, ?, ?, ?)
+                    """, (
+                        tr_row['id'],
+                        approver_db_id,
+                        'approved' if new_status in ['doctor_approved', 'admin_approved'] else 'rejected',
+                        update_data.get('comments', '')
+                    ))
             
             conn.commit()
             return True
+
+    def get_patient_internal_id(self, patient_external_id: str) -> Optional[int]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM patients WHERE patient_id = ?", (patient_external_id,))
+            row = cursor.fetchone()
+            return row['id'] if row else None
+
+    def discharge_patient(self, request_id: str, nurse_username: Optional[str] = None, notes: str = "") -> bool:
+        """Move patient from active patients to discharged_patients and complete transfer request"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Load transfer request and related info
+            cursor.execute("""
+                SELECT tr.*, p.patient_id AS patient_external_id, p.id AS patient_internal_id, p.name AS patient_name,
+                       u1.username AS nurse_username, u2.username AS doctor_username, d.name AS department_name
+                FROM transfer_requests tr
+                LEFT JOIN patients p ON tr.patient_id = p.id
+                LEFT JOIN users u1 ON tr.requesting_nurse_id = u1.id
+                LEFT JOIN users u2 ON tr.reviewing_doctor_id = u2.id
+                LEFT JOIN departments d ON tr.target_department_id = d.id
+                WHERE tr.request_id = ?
+            """, (request_id,))
+            tr = cursor.fetchone()
+            if not tr:
+                return False
+
+            # Insert into discharged_patients
+            cursor.execute("""
+                INSERT INTO discharged_patients (
+                    patient_id, patient_external_id, patient_name, target_department_id, target_department_name,
+                    requesting_nurse_username, doctor_username, admin_username, transfer_request_id, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM transfer_requests WHERE request_id = ?), ?)
+            """, (
+                tr['patient_internal_id'],
+                tr['patient_external_id'],
+                tr['patient_name'],
+                tr['target_department_id'],
+                tr['department_name'],
+                tr['nurse_username'],
+                tr['doctor_username'],
+                nurse_username or tr['nurse_username'],  # store nurse performing shift in admin_username if not available
+                request_id,
+                notes or (tr['notes'] or '')
+            ))
+
+            # Mark patient inactive (logically removed)
+            cursor.execute("UPDATE patients SET is_active = 0 WHERE id = ?", (tr['patient_internal_id'],))
+
+            # Complete transfer request
+            cursor.execute("UPDATE transfer_requests SET current_status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ?", (request_id,))
+
+            conn.commit()
+            return True
+
+    def get_discharged_patients(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT dp.*, COALESCE(d.name, dp.target_department_name) AS dept_name
+                FROM discharged_patients dp
+                LEFT JOIN departments d ON dp.target_department_id = d.id
+                ORDER BY dp.time_discharged DESC
+            """)
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'patient_id': row['patient_external_id'],
+                    'name': row['patient_name'],
+                    'time_discharged': row['time_discharged'],
+                    'target_department': row['dept_name'],
+                    'approved_by_nurse': row['requesting_nurse_username'],
+                    'approved_by_doctor': row['doctor_username'],
+                    'approved_by_admin': row['admin_username'],
+                    'transfer_request_id': row['transfer_request_id'],
+                    'notes': row['notes'],
+                })
+            return results
     
     # Department operations
     def get_departments(self) -> List[Dict[str, Any]]:

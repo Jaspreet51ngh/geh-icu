@@ -111,6 +111,25 @@ async def send_notification_to_all_connections(notification: dict):
             active_connections.remove(connection)
             logger.info(f"Removed disconnected WebSocket connection. Active connections: {len(active_connections)}")
 
+async def broadcast_vitals_and_prediction_update(patient_external_id: str):
+    try:
+        patient = db.get_patient(patient_external_id)
+        if not patient:
+            return
+        vitals = {
+            "patient_id": patient['id'],
+            "heartRate": patient['vitals']['heartRate'],
+            "spO2": patient['vitals']['spO2'],
+            "respiratoryRate": patient['vitals']['respiratoryRate'],
+            "systolicBP": patient['vitals']['systolicBP'],
+            "lactate": patient['vitals']['lactate'],
+            "gcs": patient['vitals']['gcs'],
+            "timestamp": datetime.now().isoformat(),
+        }
+        await send_notification_to_all_connections({"type": "vitals_update", "data": vitals})
+    except Exception as e:
+        logger.warning(f"Failed to broadcast update: {e}")
+
 def initialize_database_with_patients():
     if df is None:
         return
@@ -155,6 +174,58 @@ def initialize_database_with_patients():
         db.add_patient(patient_data)
     
     logger.info("Database initialization complete")
+
+async def simulate_vitals_loop():
+    """Background task to simulate vitals every 10–30 seconds and refresh prediction cache"""
+    await asyncio.sleep(2)
+    while True:
+        try:
+            await asyncio.sleep(random.randint(10, 30))
+            patients = db.get_all_patients()
+            if not patients:
+                continue
+            patient = random.choice(patients)
+
+            # Random small perturbations
+            new_vitals = {
+                "heartRate": max(40, min(140, patient['vitals']['heartRate'] + random.uniform(-3, 3))),
+                "spO2": max(85, min(100, patient['vitals']['spO2'] + random.uniform(-0.8, 0.8))),
+                "respiratoryRate": max(8, min(30, patient['vitals']['respiratoryRate'] + random.uniform(-1.5, 1.5))),
+                "systolicBP": max(80, min(200, patient['vitals']['systolicBP'] + random.uniform(-4, 4))),
+                "lactate": max(0.5, min(6.0, patient['vitals']['lactate'] + random.uniform(-0.15, 0.15))),
+                "gcs": max(3, min(15, patient['vitals']['gcs'] + random.uniform(-0.2, 0.2))),
+            }
+
+            db.update_patient_vitals(
+                patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
+                vitals=new_vitals,
+                on_ventilator=patient['onVentilator'],
+                on_pressors=patient['onPressors'],
+                comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+            )
+
+            # Recompute prediction and cache
+            try:
+                pdata = PatientData(
+                    HR=new_vitals['heartRate'],
+                    SpO2=new_vitals['spO2'],
+                    RESP=new_vitals['respiratoryRate'],
+                    ABPsys=new_vitals['systolicBP'],
+                    lactate=new_vitals['lactate'],
+                    gcs=new_vitals['gcs'],
+                    age=patient['age'],
+                    comorbidity_score=patient.get('comorbidityScore', 0) or 0,
+                    on_vent=patient['onVentilator'],
+                    on_pressors=patient['onPressors'],
+                )
+                pred = await predict_transfer_readiness(pdata)
+                db.cache_prediction(patient['id'], pred.dict())
+            except Exception as e:
+                logger.warning(f"Prediction refresh failed: {e}")
+
+            await broadcast_vitals_and_prediction_update(patient['id'])
+        except Exception as e:
+            logger.error(f"Vitals simulation loop error: {e}")
 
 try:
     import sys
@@ -355,6 +426,34 @@ async def get_patients():
     except Exception as e:
         logger.error(f"Error getting patients from database: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve patients")
+
+@app.get("/api/predict/{patient_id}")
+async def get_prediction_for_patient(patient_id: str):
+    try:
+        cached = db.get_cached_prediction(patient_id)
+        if cached is None:
+            p = db.get_patient(patient_id)
+            if not p:
+                raise HTTPException(status_code=404, detail="Patient not found")
+            pdata = PatientData(
+                HR=p['vitals']['heartRate'], SpO2=p['vitals']['spO2'], RESP=p['vitals']['respiratoryRate'],
+                ABPsys=p['vitals']['systolicBP'], lactate=p['vitals']['lactate'], gcs=p['vitals']['gcs'],
+                age=p['age'], comorbidity_score=p.get('comorbidityScore', 0) or 0,
+                on_vent=p['onVentilator'], on_pressors=p['onPressors']
+            )
+            pred = await predict_transfer_readiness(pdata)
+            db.cache_prediction(patient_id, pred.dict())
+            cached = pred.dict()
+        # Normalize to minimal shape expected by frontend getMLPrediction helper
+        return {
+            "prediction": "ready" if (cached.get('prediction') in ['Ready', 1, True, 'ready']) else "not_ready",
+            "timestamp": cached.get('timestamp', datetime.now().isoformat())
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get prediction for {patient_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get prediction")
 
 @app.get("/patient/{patient_id}/vitals")
 async def get_patient_vitals(patient_id: str):
@@ -603,6 +702,54 @@ async def approve_transfer_request(request_id: str, approve_data: dict):
         logger.error(f"Error approving transfer request: {e}")
         raise HTTPException(status_code=500, detail="Failed to approve transfer request")
 
+@app.put("/transfer-request/{request_id}/admin-approve")
+async def admin_approve_transfer_request(request_id: str, approve_data: dict):
+    try:
+        admin_id = approve_data.get("admin_id")
+        target_department = approve_data.get("target_department")
+        notes = approve_data.get("notes", "Transfer approved by admin")
+
+        if not admin_id:
+            raise HTTPException(status_code=400, detail="admin_id is required")
+
+        update_data = {
+            "status": "admin_approved",
+            "admin_id": admin_id,
+            "target_department": target_department,
+            "notes": notes,
+            "updated_at": datetime.now().isoformat()
+        }
+        return await update_transfer_request(request_id, update_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error admin-approving transfer request: {e}")
+        raise HTTPException(status_code=500, detail="Failed to admin-approve transfer request")
+
+@app.post("/transfer-request/{request_id}/discharge")
+async def discharge_patient(request_id: str, body: dict):
+    try:
+        nurse_username = body.get("nurse_id") or body.get("nurse_username") or "nurse_sarah"
+        notes = body.get("notes", "")
+        ok = db.discharge_patient(request_id, nurse_username=nurse_username, notes=notes)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Transfer request not found")
+        await send_notification_to_all_connections({"type": "patient_discharged", "data": {"request_id": request_id}})
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Discharge failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to discharge patient")
+
+@app.get("/discharged-patients")
+async def get_discharged_patients():
+    try:
+        return db.get_discharged_patients()
+    except Exception as e:
+        logger.error(f"Failed to fetch discharged patients: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch discharged patients")
+
 @app.get("/departments")
 async def get_departments():
     try:
@@ -648,4 +795,7 @@ async def get_users_by_role(role: str):
 
 if __name__ == "__main__":
     import uvicorn
+    # Start vitals simulation in background
+    loop = asyncio.get_event_loop()
+    loop.create_task(simulate_vitals_loop())
     uvicorn.run(app, host="0.0.0.0", port=8000)
