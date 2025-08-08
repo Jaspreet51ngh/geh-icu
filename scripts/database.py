@@ -415,6 +415,21 @@ class ICUDatabase:
                 prediction_dict = prediction.__dict__
             else:
                 prediction_dict = prediction
+
+            # Ensure numeric transfer_ready flag is present (1/0) for downstream consumers
+            try:
+                pred_value = prediction_dict.get('prediction')
+                if isinstance(pred_value, str):
+                    transfer_ready_val = 1 if pred_value.lower() in ['ready', '1', 'true'] else 0
+                elif isinstance(pred_value, bool):
+                    transfer_ready_val = 1 if pred_value else 0
+                elif isinstance(pred_value, (int, float)):
+                    transfer_ready_val = 1 if int(pred_value) == 1 else 0
+                else:
+                    transfer_ready_val = 0
+                prediction_dict['transfer_ready'] = transfer_ready_val
+            except Exception:
+                prediction_dict['transfer_ready'] = 0
             
             # Insert or update prediction
             import json
@@ -800,6 +815,7 @@ class ICUDatabase:
             results = []
             for row in cursor.fetchall():
                 results.append({
+                    'discharge_id': row['id'],
                     'patient_id': row['patient_external_id'],
                     'name': row['patient_name'],
                     'time_discharged': row['time_discharged'],
@@ -811,6 +827,16 @@ class ICUDatabase:
                     'notes': row['notes'],
                 })
             return results
+
+    def delete_discharged_patient(self, discharge_id: int) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM discharged_patients WHERE id = ?", (discharge_id,))
+            if cursor.fetchone() is None:
+                return False
+            cursor.execute("DELETE FROM discharged_patients WHERE id = ?", (discharge_id,))
+            conn.commit()
+            return True
     
     # Department operations
     def get_departments(self) -> List[Dict[str, Any]]:

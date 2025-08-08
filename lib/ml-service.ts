@@ -446,6 +446,7 @@ export class MLPredictionService {
   }
 
   static async getDischargedPatients(): Promise<{
+    discharge_id: number
     patient_id: string
     name: string
     time_discharged: string
@@ -457,6 +458,12 @@ export class MLPredictionService {
   }[]> {
     const res = await fetch(`${this.API_BASE_URL}/discharged-patients`)
     if (!res.ok) throw new Error('Failed to fetch discharged patients')
+    return await res.json()
+  }
+
+  static async deleteDischargedRecord(dischargeId: number): Promise<{ success: boolean }> {
+    const res = await fetch(`${this.API_BASE_URL}/discharged-patients/${dischargeId}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error('Failed to delete discharge record')
     return await res.json()
   }
 

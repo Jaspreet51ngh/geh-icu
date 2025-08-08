@@ -415,7 +415,7 @@ export function PatientCard({ patient, onTransferRequest, transferRequests = [],
             {buttonState.icon}
             {buttonState.text}
           </Button>
-          {adminApprovedRequest && currentRole === 'nurse' && (
+          {adminApprovedRequest && currentRole === 'nurse' && patient.prediction?.transferReady && (
             <Button
               onClick={async () => {
                 try {

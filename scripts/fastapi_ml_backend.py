@@ -333,6 +333,99 @@ async def simulate_static_vitals_from_csv(csv_path: str):
         logger.error(f"Vitals simulation from CSV failed: {e}")
 
 
+async def simulate_vitals_loop(csv_path: str):
+    """Every 1–2s, read next CSV row, apply vitals to ALL active patients, update predictions, and broadcast.
+    Restarts from beginning when reaching the end of the CSV.
+    """
+    await asyncio.sleep(2)
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(csv_path, newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+    except Exception as e:
+        logger.error(f"Failed to load CSV for simulation: {e}")
+        rows = []
+
+    idx = 0
+    while True:
+        try:
+            patients = db.get_all_patients()
+            if not patients:
+                await asyncio.sleep(1.5)
+                continue
+
+            current = rows[idx] if rows else None
+            for patient in patients:
+                if current:
+                    try:
+                        new_vitals = {
+                            "heartRate": float(current.get('HR', patient['vitals']['heartRate'])),
+                            "spO2": float(current.get('SpO2', patient['vitals']['spO2'])),
+                            "respiratoryRate": float(current.get('RESP', patient['vitals']['respiratoryRate'])),
+                            "systolicBP": float(current.get('ABPsys', patient['vitals']['systolicBP'])),
+                            "lactate": float(current.get('lactate', patient['vitals']['lactate'])),
+                            "gcs": float(current.get('gcs', patient['vitals']['gcs'])),
+                        }
+                        on_vent = str(current.get('on_vent', str(patient['onVentilator']))).lower() in ["1","true","yes"]
+                        on_press = str(current.get('on_pressors', str(patient['onPressors']))).lower() in ["1","true","yes"]
+                        comorb = float(current.get('comorbidity_score', patient.get('comorbidityScore', 0) or 0))
+                    except Exception:
+                        new_vitals = patient['vitals']
+                        on_vent = patient['onVentilator']
+                        on_press = patient['onPressors']
+                        comorb = patient.get('comorbidityScore', 0) or 0
+                else:
+                    new_vitals = patient['vitals']
+                    on_vent = patient['onVentilator']
+                    on_press = patient['onPressors']
+                    comorb = patient.get('comorbidityScore', 0) or 0
+
+                db.update_patient_vitals(
+                    patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
+                    vitals=new_vitals,
+                    on_ventilator=on_vent,
+                    on_pressors=on_press,
+                    comorbidity_score=comorb,
+                )
+
+                try:
+                    pdata = PatientData(
+                        HR=new_vitals['heartRate'],
+                        SpO2=new_vitals['spO2'],
+                        RESP=new_vitals['respiratoryRate'],
+                        ABPsys=new_vitals['systolicBP'],
+                        lactate=new_vitals['lactate'],
+                        gcs=new_vitals['gcs'],
+                        age=patient['age'],
+                        comorbidity_score=comorb,
+                        on_vent=on_vent,
+                        on_pressors=on_press,
+                    )
+                    pred = await predict_transfer_readiness(pdata)
+                    db.cache_prediction(patient['id'], pred.dict())
+
+                    ready_by_ml = (pred.prediction == "Ready")
+                    if ready_by_ml and _passes_clinical_rules({**patient, 'vitals': new_vitals, 'onVentilator': on_vent, 'onPressors': on_press}):
+                        try:
+                            requests = db.get_transfer_requests()
+                            has_any = any(r.get('patient_id') == patient['id'] and r.get('status') in ['pending','doctor_approved','admin_approved','completed'] for r in requests)
+                        except Exception:
+                            has_any = False
+                        db.set_ready_state(patient['id'], not has_any, pred.timestamp if not has_any else None)
+                    else:
+                        db.set_ready_state(patient['id'], False)
+                except Exception as e:
+                    logger.warning(f"Prediction refresh failed: {e}")
+
+                await broadcast_vitals_and_prediction_update(patient['id'])
+
+            if rows:
+                idx = (idx + 1) % len(rows)
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.error(f"Vitals simulation loop error: {e}")
+            await asyncio.sleep(1.5)
 try:
     import sys
     sys.path.append(os.path.dirname(__file__))
@@ -555,6 +648,7 @@ async def get_prediction_for_patient(patient_id: str):
         ready_since = db.get_ready_since(patient_id) if is_ready else None
         return {
             "prediction": "ready" if is_ready else "not_ready",
+            "transfer_ready": 1 if is_ready else 0,
             "timestamp": ready_since or cached.get('timestamp', datetime.now().isoformat()),
         }
     except HTTPException:
@@ -858,6 +952,19 @@ async def get_discharged_patients():
         logger.error(f"Failed to fetch discharged patients: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch discharged patients")
 
+@app.delete("/discharged-patients/{discharge_id}")
+async def delete_discharged_patient(discharge_id: int):
+    try:
+        ok = db.delete_discharged_patient(discharge_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Discharge record not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete discharge record: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete discharge record")
+
 @app.post("/add-patient")
 async def add_patient(payload: dict):
     try:
@@ -944,5 +1051,6 @@ if __name__ == "__main__":
     import uvicorn
     # Start vitals simulation in background
     loop = asyncio.get_event_loop()
-    loop.create_task(simulate_vitals_loop("realistic_icu_data.csv"))
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "realistic_icu_data.csv")
+    loop.create_task(simulate_vitals_loop(csv_path))
     uvicorn.run(app, host="0.0.0.0", port=8000)

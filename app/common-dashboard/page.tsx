@@ -10,6 +10,7 @@ import { FileText, Search, Download, Users } from "lucide-react"
 import { MLPredictionService } from "@/lib/ml-service"
 
 interface DischargedRow {
+  discharge_id: number
   patient_id: string
   name: string
   time_discharged: string
@@ -27,7 +28,10 @@ export default function CommonDashboardPage() {
   const load = async () => {
     try {
       const data = await MLPredictionService.getDischargedPatients()
-      setRows(data)
+      // ensure uniqueness by sorting and removing exact duplicates by discharge_id
+      const byId = new Map<number, DischargedRow>()
+      data.forEach((d: DischargedRow) => byId.set(d.discharge_id, d))
+      setRows(Array.from(byId.values()))
     } catch (e) {
       console.error(e)
     }
@@ -57,7 +61,11 @@ export default function CommonDashboardPage() {
 
   const handleExport = () => {
     const csvContent = filtered
-      .map((t) => `${t.patient_id},${t.name},${t.time_discharged},${t.target_department},${t.approved_by_nurse || ''},${t.approved_by_doctor || ''},${t.approved_by_admin || ''}`)
+      .map((t) => {
+        const ts = new Date(t.time_discharged)
+        const formatted = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')} ${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}:${String(ts.getSeconds()).padStart(2,'0')}`
+        return `${t.patient_id},${t.name},${formatted},${t.target_department},${t.approved_by_nurse || ''},${t.approved_by_doctor || ''},${t.approved_by_admin || ''}`
+      })
       .join("\n")
     const blob = new Blob([csvContent], { type: "text/csv" })
     const url = window.URL.createObjectURL(blob)
@@ -65,6 +73,15 @@ export default function CommonDashboardPage() {
     a.href = url
     a.download = "discharged-patients.csv"
     a.click()
+  }
+
+  const handleDelete = async (row: DischargedRow) => {
+    try {
+      await MLPredictionService.deleteDischargedRecord(row.discharge_id)
+      await load()
+    } catch (e) {
+      console.error(e)
+    }
   }
 
   return (
@@ -89,6 +106,9 @@ export default function CommonDashboardPage() {
             </div>
           </CardHeader>
           <CardContent>
+            {filtered.length === 0 ? (
+              <div className="text-sm text-slate-600">No discharged patients yet.</div>
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -99,11 +119,12 @@ export default function CommonDashboardPage() {
                   <TableHead>Approved By (Nurse)</TableHead>
                   <TableHead>Approved By (Doctor)</TableHead>
                   <TableHead>Approved By (Admin)</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.map((t) => (
-                  <TableRow key={`${t.transfer_request_id}-${t.patient_id}`}>
+                  <TableRow key={`${t.discharge_id}-${t.transfer_request_id}-${t.time_discharged}`}>
                     <TableCell>{t.patient_id}</TableCell>
                     <TableCell>{t.name}</TableCell>
                     <TableCell>{new Date(t.time_discharged).toLocaleString()}</TableCell>
@@ -111,10 +132,14 @@ export default function CommonDashboardPage() {
                     <TableCell>{t.approved_by_nurse || '—'}</TableCell>
                     <TableCell>{t.approved_by_doctor || '—'}</TableCell>
                     <TableCell>{t.approved_by_admin || '—'}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="outline" size="sm" onClick={() => handleDelete(t)}>Delete</Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </div>
