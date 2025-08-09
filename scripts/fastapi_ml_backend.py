@@ -193,6 +193,26 @@ def _passes_clinical_rules(p: dict) -> bool:
     except Exception:
         return False
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+def generate_random_vitals(base_vitals: Dict[str, float], amplitude: float = 1.0) -> Dict[str, float]:
+    """Create a patient-specific jitter around base vitals.
+    amplitude scales the magnitude of random variation.
+    """
+    try:
+        return {
+            "heartRate": _clamp(base_vitals["heartRate"] + random.uniform(-3, 3) * amplitude, 40, 160),
+            "spO2": _clamp(base_vitals["spO2"] + random.uniform(-1.0, 1.0) * amplitude, 85, 100),
+            "respiratoryRate": _clamp(base_vitals["respiratoryRate"] + random.uniform(-2.0, 2.0) * amplitude, 8, 30),
+            "systolicBP": _clamp(base_vitals["systolicBP"] + random.uniform(-5, 5) * amplitude, 80, 200),
+            "lactate": _clamp(base_vitals["lactate"] + random.uniform(-0.2, 0.2) * amplitude, 0.5, 6.0),
+            "gcs": _clamp(base_vitals["gcs"] + random.uniform(-0.3, 0.3) * amplitude, 3, 15),
+        }
+    except Exception:
+        # If any field missing, just return the base
+        return base_vitals
+
 # async def simulate_vitals_loop():
 #     """Background task to simulate vitals every 5–10 seconds across all active patients, refresh predictions, and maintain ready_since."""
 #     await asyncio.sleep(2)
@@ -381,6 +401,19 @@ async def simulate_vitals_loop(csv_path: str):
                     on_vent = patient['onVentilator']
                     on_press = patient['onPressors']
                     comorb = patient.get('comorbidityScore', 0) or 0
+
+                # Per-patient randomization so each patient has unique vitals every cycle
+                try:
+                    # Small deterministic amplitude based on patient id to diversify ranges
+                    amp = 0.8 + (abs(hash(patient['id'])) % 5) / 10.0  # 0.8 .. 1.2
+                except Exception:
+                    amp = 1.0
+                new_vitals = generate_random_vitals(new_vitals, amplitude=amp)
+                # Occasionally flip life support flags with tiny probability to simulate changes
+                if random.random() < 0.01:
+                    on_vent = bool(1 - int(on_vent))
+                if random.random() < 0.01:
+                    on_press = bool(1 - int(on_press))
 
                 db.update_patient_vitals(
                     patient_db_id=db.get_patient_internal_id(patient['id']) or 0,
