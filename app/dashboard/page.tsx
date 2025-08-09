@@ -24,6 +24,7 @@ import { MLPredictionService, type Patient, type TransferRequest } from "@/lib/m
 import { useRouter } from "next/navigation"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import ViewTransferredButton from "@/components/view-transferred-button"
 import { Label } from "@/components/ui/label"
 // duplicate import removed
 
@@ -242,8 +243,9 @@ export default function Dashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Nurse-only new patient button */}
-        <div className="flex justify-end mb-4">
+        {/* Quick actions */}
+        <div className="flex justify-between mb-4">
+          <ViewTransferredButton />
           <Button className="bg-teal-600 hover:bg-teal-700 text-white" onClick={() => setShowNewPatient(true)}>
             + New Patient
           </Button>

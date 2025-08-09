@@ -28,6 +28,7 @@ import { PatientCard } from "@/components/patient-card"
 import { TransferRequestModal } from "@/components/transfer-request-modal"
 import { NotificationPanel } from "@/components/notification-panel"
 import { useRouter } from "next/navigation"
+import ViewTransferredButton from "@/components/view-transferred-button"
 
 export default function DoctorReview() {
   const [transferRequests, setTransferRequests] = useState<TransferRequest[]>([])
@@ -267,6 +268,7 @@ export default function DoctorReview() {
                 <RefreshCw className="h-4 w-4" />
                 <span>Refresh</span>
               </Button>
+              <ViewTransferredButton />
               <Button
                 variant="outline"
                 size="sm"

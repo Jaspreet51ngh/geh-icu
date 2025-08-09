@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { CheckCircle, XCircle, Clock, Bed, ArrowRightLeft, Shield, LogOut, Users, AlertTriangle, RefreshCw, Activity } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { MLPredictionService, type TransferRequest } from "@/lib/ml-service"
+import ViewTransferredButton from "@/components/view-transferred-button"
 
 // Mock bed availability data
 const mockBedAvailability = {
@@ -105,11 +106,11 @@ export default function AdminDashboardPage() {
       // Update transfer request status
       await MLPredictionService.updateTransferRequest(requestId, {
         status: "admin_approved",
-        admin_id: username,
+        // admin id is stored by backend via update route; we pass it via notes for type compatibility
+        notes: `approved by ${username}`,
         target_department: targetDepartment,
-        bed_assigned: true,
         updated_at: new Date().toISOString()
-      })
+      } as any)
 
       // Update bed availability
       setBedAvailability(prev => ({
@@ -142,10 +143,9 @@ export default function AdminDashboardPage() {
     try {
       await MLPredictionService.updateTransferRequest(requestId, {
         status: "admin_rejected",
-        admin_id: username,
-        notes: reason || "Rejected by admin - no beds available",
+        notes: (reason || "Rejected by admin - no beds available") + ` (by ${username})`,
         updated_at: new Date().toISOString()
-      })
+      } as any)
       
       // Refresh data
       await fetchTransferRequests()
@@ -207,6 +207,7 @@ export default function AdminDashboardPage() {
               <p className="font-medium">{username}</p>
               <p className="text-blue-200 text-sm">{userRole}</p>
             </div>
+            <ViewTransferredButton />
             <Button
               variant="outline"
               size="sm"
