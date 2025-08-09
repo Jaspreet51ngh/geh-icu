@@ -356,6 +356,7 @@ async def simulate_vitals_loop(csv_path: str):
                 continue
 
             current = rows[idx] if rows else None
+            logger.info(f"simulate_vitals_loop: tick={idx} rows_loaded={len(rows)} updating_active_patients={len(patients)}")
             for patient in patients:
                 if current:
                     try:
@@ -426,6 +427,23 @@ async def simulate_vitals_loop(csv_path: str):
         except Exception as e:
             logger.error(f"Vitals simulation loop error: {e}")
             await asyncio.sleep(1.5)
+
+# Ensure simulation starts when the FastAPI app starts (works with uvicorn and __main__)
+_simulation_task_started = False
+
+@app.on_event("startup")
+async def _start_simulation_on_startup() -> None:
+    global _simulation_task_started
+    if _simulation_task_started:
+        logger.info("Vitals simulation task already started; skipping duplicate startup.")
+        return
+    try:
+        csv_path = os.path.join(os.path.dirname(__file__), "..", "realistic_icu_data.csv")
+        asyncio.create_task(simulate_vitals_loop(csv_path))
+        _simulation_task_started = True
+        logger.info(f"Vitals simulation task started with CSV: {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to start vitals simulation: {e}")
 try:
     import sys
     sys.path.append(os.path.dirname(__file__))
@@ -1049,8 +1067,5 @@ async def get_users_by_role(role: str):
 
 if __name__ == "__main__":
     import uvicorn
-    # Start vitals simulation in background
-    loop = asyncio.get_event_loop()
-    csv_path = os.path.join(os.path.dirname(__file__), "..", "realistic_icu_data.csv")
-    loop.create_task(simulate_vitals_loop(csv_path))
+    logger.info("Starting ICU Transfer Prediction API server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -124,7 +124,7 @@ export default function CommonDashboardPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((t) => (
-                  <TableRow key={`${t.discharge_id}-${t.transfer_request_id}-${t.time_discharged}`}>
+                  <TableRow key={t.discharge_id}>
                     <TableCell>{t.patient_id}</TableCell>
                     <TableCell>{t.name}</TableCell>
                     <TableCell>{new Date(t.time_discharged).toLocaleString()}</TableCell>

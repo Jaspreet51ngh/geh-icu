@@ -59,6 +59,13 @@ export default function DoctorReview() {
         
         // Connect to WebSocket for real-time updates
         MLPredictionService.connectWebSocket()
+        MLPredictionService.setPatientDataCallback((updated) => {
+          setPatients(updated)
+          setLastUpdate(new Date())
+        })
+        MLPredictionService.setTransferRequestCallback((updated) => {
+          setTransferRequests(updated)
+        })
         
         // Add listeners for real-time updates
         MLPredictionService.addListener('vitals_update', handleVitalsUpdate)
@@ -90,6 +97,8 @@ export default function DoctorReview() {
       MLPredictionService.removeListener('vitals_update', handleVitalsUpdate)
       MLPredictionService.removeListener('transfer_request_created', handleTransferRequestCreated)
       MLPredictionService.removeListener('transfer_request_updated', handleTransferRequestUpdated)
+      MLPredictionService.setPatientDataCallback(() => {})
+      MLPredictionService.setTransferRequestCallback(() => {})
       clearInterval(interval)
     }
   }, [router])

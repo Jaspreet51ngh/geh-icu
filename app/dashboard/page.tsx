@@ -49,6 +49,14 @@ export default function Dashboard() {
         
         // Connect to WebSocket for real-time updates
         MLPredictionService.connectWebSocket()
+        // Wire auto-refresh callbacks so vitals and ML predictions update without manual refresh
+        MLPredictionService.setPatientDataCallback((updated) => {
+          setPatients(updated)
+          setLastUpdate(new Date())
+        })
+        MLPredictionService.setTransferRequestCallback((updated) => {
+          setTransferRequests(updated)
+        })
         
         // Add listeners for real-time updates
         MLPredictionService.addListener('vitals_update', handleVitalsUpdate)
@@ -77,6 +85,8 @@ export default function Dashboard() {
       MLPredictionService.removeListener('transfer_request_created', handleTransferRequestCreated)
       MLPredictionService.removeListener('transfer_request_updated', handleTransferRequestUpdated)
       MLPredictionService.removeListener('patient_discharged', handlePatientDischarged)
+      MLPredictionService.setPatientDataCallback(() => {})
+      MLPredictionService.setTransferRequestCallback(() => {})
     }
   }, [])
 
